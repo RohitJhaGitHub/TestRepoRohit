@@ -1,0 +1,646 @@
+/**
+* This is a Class for CaseTriggerHandler
+* @author :  Accenture - Abhishek KJ
+* @version : 1.0
+* @objects Referenced : assessment question
+* @Created Date: 08/29/2018
+*/
+public with sharing class CaseTriggerHandler extends TriggerHandler {
+    
+    private Static Final String PROD_SRC = 'Production_Source_Request';
+    private Static Final String CASESOBJ = 'Case';
+    
+    private static final String landingURL1           = '<a href=\" ';
+    private static final String landingURL2           = '\">';
+    private static final String landingURL3           = '</a>';
+    private static final String landingURL4           = 'email-invite?fn=';
+    private static final String landingURL5           = '&ln=';
+    private static final String landingURL6           = '&we=';
+    private static final String landingURL7           = '&cid=';
+    private static final String REMOVED               = 'Removed';
+    private static final String B2B_SECONDARY_INVITED = 'B2B_Secondary_Invited';
+    private static final String B2B_PRIMARY_INVITE    = 'B2B_Primary_Invite';
+    private static final String INSERT_COMPANY_NAME   = '[insert company name]';
+    private static final String COMPANY_NAME          = '[COMPANY NAME]';
+    private static final String XX                    = '[xx]';
+    private static final String LANDING_PAGE_LINK     = '[landing page link]';
+    private static final String GRSCorp     = '[GRS_CorpId]';
+    private static final String HotelName     = '[HotelName]';
+    
+    
+    // Before insert
+    public override void beforeInsert() { 
+        updateDefaultEntitlementonCase(trigger.new, trigger.oldMap);
+        //Veer: 2/22/19: US64701: IHGBE: Create a new Report Type with Cases & Hotel objects
+        updateHotelOnCase(trigger.new);
+    }  
+    
+    // Before Update  
+    public override void beforeUpdate(){
+        
+        CheckPendingCasesOnProdSource( trigger.new, trigger.oldMap, trigger.newMap);
+        updateDefaultEntitlementonCase(trigger.new, trigger.oldMap);
+    }
+    
+    //After Update
+    public override void afterUpdate(){
+        sendHCMEmailTC(trigger.new);
+        updateEnrollmentSource(trigger.new, trigger.oldMap, trigger.newMap);
+       // CompleteResponseTimeMilestone ();
+    }
+    
+    
+    
+ 
+/* 
+@Description : To update Enrollment Source field from Case to Production Source record regardless of status from their production source case record in Javelin.
+Changed by   : Aashna Kainth 
+User story:  US98548
+*/     
+    public static void updateEnrollmentSource(List <case> TriggerNewCaseList, Map<Id, sObject> triggerCaseOldMap, Map<id, sObject> triggerCaseNewMap){
+      List<case> newCaseList = (List<case>) TriggerNewCaseList;
+        for(Case cs: newCaseList){
+            List <Production_Source__c> psList = [Select Enrollment_Source__c
+                                    From Production_Source__c
+                                    where Id=: cs.Production_Source__c];
+            for(Production_Source__c Ps:psList){
+                Ps.Enrollment_Source__c = cs.Enrollment_Source__c;
+                update Ps;
+            }
+        }
+      
+        
+        
+    }
+    
+    
+    public static void updateDefaultEntitlementonCase(List <case> TriggerNewCaseList, Map<Id, sObject> triggerCaseOldMap)  
+    {
+        //Map<id, case> caseNewMap = (Map<id, Case>) triggerCaseNewMap;
+        //Map<id, case> caseOldMap = (Map<id, Case>) triggerCaseOldMap;
+        List<case> newCaseList = (List<case>) TriggerNewCaseList;
+        List <Entitlement> entls = [Select e.StartDate, e.Id, e.EndDate, e.AccountId, e.AssetId
+                                    From Entitlement e
+                                    where e.EndDate >= Today And e.StartDate <= Today];
+        Map<ID, RecordType> recordTypeMap = New Map<ID, RecordType>([Select ID, Name From RecordType Where sObjectType = 'Case']);
+        
+        for( case cse : newCaseList ){
+            if(cse.EntitlementId == null ){
+                if((recordTypeMap.get(cse.recordTypeID).name.containsIgnoreCase('IHG Javelin Tech Support'))){
+                    for(Entitlement e:entls){
+                        cse.EntitlementId = e.Id;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    
+    /* 
+@Description : This method will check if there are existing cases on Production Source
+which are not in 'Closed'status and throw an error, if users try to 
+approve or close a new case.
+@Author : Accenture
+*/ 
+    public static void  CheckPendingCasesOnProdSource(List <case> TriggerNewCaseList, Map<Id, sObject> triggerCaseOldMap, Map<id, sObject> triggerCaseNewMap){
+        Map<id, case> caseNewMap = (Map<id, Case>) triggerCaseNewMap;
+        Map<id, case> caseOldMap = (Map<id, Case>) triggerCaseOldMap;
+        List<case> newCaseList = (List<case>) TriggerNewCaseList;
+        List<Case> caseList = new List<Case>();
+        Recordtype recType = [Select id from recordtype where DeveloperName =: Label.caseRecordType_name
+                              LIMIT:Limits.getLimitQueryRows() - Limits.getQueryRows()];
+        set<Id> prodSourceIdSet = New set<Id>();
+        set<Case> prodSourceCaseSet = New set<Case>(); 
+        Map<id, List<Case>> PrdSourceIdCaseMap = New Map<id, List<Case>>();
+        for( case cse : newCaseList ){
+            if(cse.recordtypeid == recType.id){
+                prodSourceIdSet.add(cse.Production_Source__c);
+                prodSourceCaseSet.add(cse);
+            }
+        }
+        for(Production_Source__c prodSource : [Select id, (select Status, CaseNumber,CreatedDate
+                                                           from Cases__r Order By CreatedDate ASC )
+                                               from Production_Source__c Where Id IN : prodSourceIdSet 
+                                               LIMIT:Limits.getLimitQueryRows() - Limits.getQueryRows()]){
+                                                   
+                                                   if(prodSource.Cases__r.size()>0){
+                                                       PrdSourceIdCaseMap.Put(prodSource.ID, prodSource.Cases__r);
+                                                   }                                           
+                                                   
+                                               }
+        /*To check if the status of case is changed to Approved/Closed and to throw error message if there are existing cases
+that are not in closed status on the Production Source */ 
+        
+        for(Case itrCase : prodSourceCaseSet){
+            Case oldCase = caseOldMap.get(itrCase.id);
+            Case newCase = caseNewMap.get(itrCase.id);
+            if(newCase.Status != oldCase.Status && (newCase.Status.equals('Closed') || (newCase.Status.equals('Approved')))){
+                if(PrdSourceIdCaseMap!=null && PrdSourceIdCaseMap.containsKey(itrCase.Production_Source__c) ){
+                    caseList =   PrdSourceIdCaseMap.get(itrCase.Production_Source__c);
+                    if(!caseList.isEmpty() ){
+                        for(Case relatedCase : caseList){
+                            // BJain: 02-15-2019: US67537- Updated condition to include Rejected Status
+                            //if(relatedCase != itrCase && relatedCase.status != 'Closed' && relatedCase.createdDate < itrCase.createdDate )
+                            if(relatedCase != itrCase && (relatedCase.status == 'Submitted' || relatedCase.status == 'Requested' || relatedCase.status == 'Approved' || relatedCase.status == 'Pending') && relatedCase.createdDate < itrCase.createdDate )
+                            {
+                                sObject errorCase =  triggerCaseNewMap.get(itrCase.id);
+                                errorCase.addError('Error: Pending Case - ' + relatedCase.CaseNumber + ' on Production Source' );
+                                break;
+                            }
+                        }
+                    } 
+                }
+            }
+        }                                       
+    }
+    //Veer: 2/22/19: US64701: IHGBE: Create a new Report Type with Cases & Hotel objects
+    public static void updateHotelOnCase(List <case> TriggerNewCaseList){
+        Map<String,Id> htMap = new Map<String,Id>();
+        Set<String> htCodeSet = new Set<String>();
+        
+        for(Case cs : TriggerNewCaseList){
+            if(cs.RecordTypeId == [SELECT id FROM recordtype WHERE DeveloperName = :PROD_SRC 
+                                   AND SobjectType = :CASESOBJ LIMIT 1].id)
+                htCodeSet.add(cs.Inn_Code__c);
+        }
+        for(Hotel__c ht : [SELECT ID,Holidex_Inn_Code__c  FROM Hotel__c WHERE Holidex_Inn_Code__c IN :htCodeSet]){
+            htMap.put(ht.Holidex_Inn_Code__c , ht.id);
+        }
+        
+        for(Case cs : TriggerNewCaseList){
+            if(String.isNotBlank(cs.Inn_Code__c) && String.isBlank(cs.hotelCode__c))
+                cs.hotelCode__c = htMap.get(cs.Inn_Code__c);
+        }
+    }
+    
+ /*
+public static void CompleteResponseTimeMilestone (){
+DateTime completionDate = System.now(); 
+ Map<ID, RecordType> recordTypeMap = New Map<ID, RecordType>([Select ID, Name From RecordType Where sObjectType = 'Case']);
+            List<Id> updateCases = new List<Id>();
+            for (Case c : Trigger.new){
+           if((recordTypeMap.get(cse.recordTypeID).name.containsIgnoreCase('IHG Javelin Tech Support'))){
+                    if (((c.re == true)||(c.Status == 'Assigned'))&&((c.SlaStartDate 
+                        <= completionDate)&&(c.SlaExitDate == null)))
+                      updateCases.add(c.Id);
+                       }
+        }
+    if (updateCases.isEmpty() == false)
+        milestoneUtils.completeMilestone(updateCases, 'Response Time', completionDate);
+
+}
+
+*/   
+    
+    /**
+* This is a Class for CaseTriggerHandler
+* @author :  Accenture -Arun    
+* @version : 1.0
+* @objects Referenced :  Flow for T&C email for HCM request 
+* @Modified :Accenture Kishan (New Email set to customer and assigning correct email to hotel seller and customer)
+
+* @Created Date: 06/17/2019
+*/
+    //Arun: US79367 New Flow for HCM
+    public static void sendHCMEmailTC(List <case> TriggerNewCaseList){
+        try{
+            // List<Case>NewCaseCroppAccReq = new List<Case>(TriggerNewCaseList());
+            
+            
+            
+            List<Id> accId = new List<Id>();
+            set<id> casePrdId = new set<id>();
+            Boolean showDuplicateError = false;
+            List<String> listOfEmails = new List<String>();
+            Map<String,String> mapOfExistingContacts = new Map<String,String>();
+            for(Case iterCase : TriggerNewCaseList){
+                if(iterCase.Request_Channel__c == 'HCM' && iterCase.Status == 'Closed' && iterCase.IHGBE_Request__c == true){
+                    
+                    accId.add(iterCase.AccountId);
+                    listOfEmails.add(iterCase.cc_Email__c); 
+                    casePrdId.add(iterCase.Production_Source__c);
+                    
+                    
+                    
+                    List<Contact> emailConList = [Select Id,email,SME_Member_Status_List__c from Contact where  Email IN: listOfEmails];
+                    if(emailConList.size() > 0 ){
+                        for(contact c: emailConList){
+                            if(c.SME_Member_Status_List__c != REMOVED){
+                                showDuplicateError = true;
+                            }
+                        }
+                    }
+                    
+                    
+                    
+                    
+                    if(!showDuplicateError){
+                        
+                        Production_Source__c sAccount=[select id,Corporate_ID_Number_Display__c from Production_Source__c where Account_Name__c =: accId and id =: casePrdId];
+                        list<account> accList =[Select Id,Name, BillingCity, BillingCountry, BillingPostalCode, BillingState, BillingStreet from Account Where Id =: accId];
+                        
+                        
+                        
+                        list<contact> conList = new List<Contact>(); 
+                        Contact newCon = new Contact();
+                        newCon.FirstName = iterCase.CC_First_Name__c;
+                        newCon.LastName = iterCase.CC_Last_Name__c;
+                        newCon.Email = iterCase.cc_Email__c;
+                        //  newCon.Communities__c = 'IHG Business Edge';
+                        
+                        // newCon.IHG_Rewards_no__c='166598150';
+                        //  newCon.SME_Member_Status_List__c = 'Administrator';
+                        //newCon.Key_Contact__c = False;
+                        newCon.AccountId = accList[0].Id;
+                        newCon.MailingCity = accList[0].BillingCity;
+                        newCon.MailingState = accList[0].BillingState;
+                        newCon.MailingCountry = accList[0].BillingCountry;
+                        newCon.MailingPostalCode = accList[0].BillingPostalCode;
+                        newCon.MailingStreet = accList[0].BillingStreet;
+                        // newCon.Comments_Reasons_Other__c = COLLEAGUEINV;
+                        /* if(mapOfExistingContacts.containsKey(newCon.Email)){
+newCon.Id = mapOfExistingContacts.get(newCon.Email);
+}*/
+                        //system.debug('********check*****'+newCon.Communities__c);
+                        conList.add(newCon);
+                        if(conList.size() > 0){                     
+                            insert conList;                                                  
+                        }
+                        List<EmailTemplate> listOfTemplates= new List<EmailTemplate>();
+                        String emailTemplate = B2B_Utility.B2B_SendEmailTemplates(B2B_PRIMARY_INVITE,newCon.Email);
+                        //listOfTemplates = [Select Id, HtmlValue, Subject,body,DeveloperName FROM EmailTemplate WHERE DeveloperName = :B2B_SECONDARY_INVITED]; 
+                        listOfTemplates = [Select Id, HtmlValue, Subject,body,DeveloperName FROM EmailTemplate WHERE DeveloperName = :emailTemplate]; 
+                        
+                        if(listOfTemplates != null && !listOfTemplates.isEmpty()){
+                            String subject = listOfTemplates[0].Subject;
+                            subject = subject.replace(INSERT_COMPANY_NAME,accList[0].Name);
+                            
+                            for(Contact c : conList){
+                                
+                                String emailBody = listOfTemplates[0].HtmlValue;
+                                /*if(c.FirstName != null){
+c.FirstName = c.FirstName.replaceAll(SSS,TWENTY);
+}
+if(c.LastName != null){
+c.LastName = c.LastName.replaceAll(SSS,TWENTY);
+}*/
+                                
+                                String landingURL = Label.BE_Community_URL + landingURL4 +c.FirstName+ landingURL5 +c.LastName+ landingURL6 +c.Email+landingURL7+sAccount.Corporate_ID_Number_Display__c;
+                                //US57528 - replacing the URL with a "Click Here" hyperlink - 15th Dec, 18
+                                //landingURL = landingURL1 + landingURL +landingURL2 + Label.B2B_Secondary_UserRegistration_ClickHere_Text + landingURL3;
+                                emailBody = emailBody.replace(COMPANY_NAME, accList[0].Name);
+                                emailBody = emailBody.replace(XX, c.FirstName +' '+c.LastName);
+                                emailBody = emailBody.replace(LANDING_PAGE_LINK, landingURL);
+                                /*if (iterCase.hotel_Name__c!=Null){
+emailBody = emailBody.replace(HotelName,iterCase.Hotel_Name__c );
+}*/
+                                emailBody = emailBody.replace(GRSCorp,iterCase.GRS_Corporate_Account_ID__c);
+                                Utility.sendEmail(subject, c.Email, emailBody);
+                            }
+                            
+                        }       
+                        
+                    }
+                }
+            } 
+        }catch(Exception ex){		
+            system.debug('please check ccorrect croporate number '+ex.getMessage());
+            
+        }
+    }
+    //Arun Changes Ends 
+    
+}
+
+
+=============================================================================Updated One=========================================================
+/**
+* This is a Class for CaseTriggerHandler
+* @author :  Accenture - Abhishek KJ
+* @version : 1.0
+* @objects Referenced : assessment question
+* @Created Date: 08/29/2018
+*/
+public with sharing class CaseTriggerHandler extends TriggerHandler {
+    
+    private Static Final String PROD_SRC = 'Production_Source_Request';
+    private Static Final String CASESOBJ = 'Case';
+    
+    private static final String landingURL1           = '<a href=\" ';
+    private static final String landingURL2           = '\">';
+    private static final String landingURL3           = '</a>';
+    private static final String landingURL4           = 'email-invite?fn=';
+    private static final String landingURL5           = '&ln=';
+    private static final String landingURL6           = '&we=';
+    private static final String landingURL7           = '&cid=';
+    private static final String REMOVED               = 'Removed';
+    private static final String B2B_SECONDARY_INVITED = 'B2B_Secondary_Invited';
+    private static final String B2B_PRIMARY_INVITE    = 'B2B_Primary_Invite';
+    private static final String INSERT_COMPANY_NAME   = '[insert company name]';
+    private static final String COMPANY_NAME          = '[COMPANY NAME]';
+    private static final String XX                    = '[xx]';
+    private static final String LANDING_PAGE_LINK     = '[landing page link]';
+    private static final String GRSCorp     = '[GRS_CorpId]';
+    private static final String HotelName     = '[HotelName]';
+    
+    
+    // Before insert
+    public override void beforeInsert() { 
+        updateDefaultEntitlementonCase(trigger.new, trigger.oldMap);
+        //Veer: 2/22/19: US64701: IHGBE: Create a new Report Type with Cases & Hotel objects
+        updateHotelOnCase(trigger.new);
+    }  
+    
+    public override void beforeUpdate(){
+        
+        CheckPendingCasesOnProdSource( trigger.new, trigger.oldMap, trigger.newMap);
+        updateDefaultEntitlementonCase(trigger.new, trigger.oldMap);
+    }
+    public override void afterInsert(){
+        updateEnrollmentSource(trigger.new, trigger.oldMap, trigger.newMap);
+    }
+    public override void afterUpdate(){
+        sendHCMEmailTC(trigger.new);
+        updateEnrollmentSource(trigger.new, trigger.oldMap, trigger.newMap);
+        // CompleteResponseTimeMilestone ();
+    }
+    
+    
+    
+    
+    
+    /* 
+@Description : To update Enrollment Source field from Case to Production Source record regardless of status from their production source case record in Javelin.
+Changed by   : Aashna Kainth 
+User story:  US98548
+*/     
+    public static void updateEnrollmentSource(List <case> TriggerNewCaseList, Map<Id, SObject> triggerCaseOldMap, Map<id, SObject> triggerCaseNewMap){
+        List<case> newCaseList = (List<case>) TriggerNewCaseList;
+        Map<id, case> caseNewMap = (Map<id, Case>) triggerCaseNewMap;
+        Map<id, case> caseOldMap = (Map<id, Case>) triggerCaseOldMap;
+        Map<id,Case> mapCase=new Map<id,Case>();
+        Map<id,Production_Source__c> mapPSource=new Map<id,Production_Source__c>();
+        for(Case ObjCs: newCaseList){
+            if(!String.isEmpty(ObjCs.Production_Source__c))
+                mapCase.put(ObjCs.Production_Source__c,ObjCs);
+            
+        }   
+        for(Production_Source__c objPSour : [Select Enrollment_Source__c
+                                             From Production_Source__c
+                                             where Id IN: mapCase.keySet()])
+            mapPSource.put(objPSour.id, objPSour);
+        
+        for(Case objMCs:mapCase.values()){
+            if(trigger.isInsert && mapPSource.containsKey(objMCs.Production_Source__c) && objMCs.Enrollment_Source__c!=mapPSource.get(objMCs.Production_Source__c).Enrollment_Source__c)
+                mapPSource.get(objMCs.Production_Source__c).Enrollment_Source__c=objMCs.Enrollment_Source__c;
+            
+           
+            if(trigger.isUpdate && caseNewMap.get(objMCs.id).Production_Source__c!=caseNewMap.get(objMCs.id).Production_Source__c)
+                mapPSource.get(objMCs.Production_Source__c).Enrollment_Source__c=objMCs.Enrollment_Source__c;
+            
+        }
+        
+        update mapPSource.values();
+        
+        
+        
+    }
+    
+    
+    public static void updateDefaultEntitlementonCase(List <case> TriggerNewCaseList, Map<Id, sObject> triggerCaseOldMap)  
+    {
+        //Map<id, case> caseNewMap = (Map<id, Case>) triggerCaseNewMap;
+        //Map<id, case> caseOldMap = (Map<id, Case>) triggerCaseOldMap;
+        List<case> newCaseList = (List<case>) TriggerNewCaseList;
+        List <Entitlement> entls = [Select e.StartDate, e.Id, e.EndDate, e.AccountId, e.AssetId
+                                    From Entitlement e
+                                    where e.EndDate >= Today And e.StartDate <= Today];
+        Map<ID, RecordType> recordTypeMap = New Map<ID, RecordType>([Select ID, Name From RecordType Where sObjectType = 'Case']);
+        
+        for( case cse : newCaseList ){
+            if(cse.EntitlementId == null ){
+                if((recordTypeMap.get(cse.recordTypeID).name.containsIgnoreCase('IHG Javelin Tech Support'))){
+                    for(Entitlement e:entls){
+                        cse.EntitlementId = e.Id;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    
+    /* 
+@Description : This method will check if there are existing cases on Production Source
+which are not in 'Closed'status and throw an error, if users try to 
+approve or close a new case.
+@Author : Accenture
+*/ 
+    public static void  CheckPendingCasesOnProdSource(List <case> TriggerNewCaseList, Map<Id, sObject> triggerCaseOldMap, Map<id, sObject> triggerCaseNewMap){
+        Map<id, case> caseNewMap = (Map<id, Case>) triggerCaseNewMap;
+        Map<id, case> caseOldMap = (Map<id, Case>) triggerCaseOldMap;
+        List<case> newCaseList = (List<case>) TriggerNewCaseList;
+        List<Case> caseList = new List<Case>();
+        Recordtype recType = [Select id from recordtype where DeveloperName =: Label.caseRecordType_name
+                              LIMIT:Limits.getLimitQueryRows() - Limits.getQueryRows()];
+        set<Id> prodSourceIdSet = New set<Id>();
+        set<Case> prodSourceCaseSet = New set<Case>(); 
+        Map<id, List<Case>> PrdSourceIdCaseMap = New Map<id, List<Case>>();
+        for( case cse : newCaseList ){
+            if(cse.recordtypeid == recType.id){
+                prodSourceIdSet.add(cse.Production_Source__c);
+                prodSourceCaseSet.add(cse);
+            }
+        }
+        for(Production_Source__c prodSource : [Select id, (select Status, CaseNumber,CreatedDate
+                                                           from Cases__r Order By CreatedDate ASC )
+                                               from Production_Source__c Where Id IN : prodSourceIdSet 
+                                               LIMIT:Limits.getLimitQueryRows() - Limits.getQueryRows()]){
+                                                   
+                                                   if(prodSource.Cases__r.size()>0){
+                                                       PrdSourceIdCaseMap.Put(prodSource.ID, prodSource.Cases__r);
+                                                   }                                           
+                                                   
+                                               }
+        /*To check if the status of case is changed to Approved/Closed and to throw error message if there are existing cases
+that are not in closed status on the Production Source */ 
+        
+        for(Case itrCase : prodSourceCaseSet){
+            Case oldCase = caseOldMap.get(itrCase.id);
+            Case newCase = caseNewMap.get(itrCase.id);
+            if(newCase.Status != oldCase.Status && (newCase.Status.equals('Closed') || (newCase.Status.equals('Approved')))){
+                if(PrdSourceIdCaseMap!=null && PrdSourceIdCaseMap.containsKey(itrCase.Production_Source__c) ){
+                    caseList =   PrdSourceIdCaseMap.get(itrCase.Production_Source__c);
+                    if(!caseList.isEmpty() ){
+                        for(Case relatedCase : caseList){
+                            // BJain: 02-15-2019: US67537- Updated condition to include Rejected Status
+                            //if(relatedCase != itrCase && relatedCase.status != 'Closed' && relatedCase.createdDate < itrCase.createdDate )
+                            if(relatedCase != itrCase && (relatedCase.status == 'Submitted' || relatedCase.status == 'Requested' || relatedCase.status == 'Approved' || relatedCase.status == 'Pending') && relatedCase.createdDate < itrCase.createdDate )
+                            {
+                                sObject errorCase =  triggerCaseNewMap.get(itrCase.id);
+                                errorCase.addError('Error: Pending Case - ' + relatedCase.CaseNumber + ' on Production Source' );
+                                break;
+                            }
+                        }
+                    } 
+                }
+            }
+        }                                       
+    }
+    //Veer: 2/22/19: US64701: IHGBE: Create a new Report Type with Cases & Hotel objects
+    public static void updateHotelOnCase(List <case> TriggerNewCaseList){
+        Map<String,Id> htMap = new Map<String,Id>();
+        Set<String> htCodeSet = new Set<String>();
+        
+        for(Case cs : TriggerNewCaseList){
+            if(cs.RecordTypeId == [SELECT id FROM recordtype WHERE DeveloperName = :PROD_SRC 
+                                   AND SobjectType = :CASESOBJ LIMIT 1].id)
+                htCodeSet.add(cs.Inn_Code__c);
+        }
+        for(Hotel__c ht : [SELECT ID,Holidex_Inn_Code__c  FROM Hotel__c WHERE Holidex_Inn_Code__c IN :htCodeSet]){
+            htMap.put(ht.Holidex_Inn_Code__c , ht.id);
+        }
+        
+        for(Case cs : TriggerNewCaseList){
+            if(String.isNotBlank(cs.Inn_Code__c) && String.isBlank(cs.hotelCode__c))
+                cs.hotelCode__c = htMap.get(cs.Inn_Code__c);
+        }
+    }
+    
+    /*
+public static void CompleteResponseTimeMilestone (){
+DateTime completionDate = System.now(); 
+Map<ID, RecordType> recordTypeMap = New Map<ID, RecordType>([Select ID, Name From RecordType Where sObjectType = 'Case']);
+List<Id> updateCases = new List<Id>();
+for (Case c : Trigger.new){
+if((recordTypeMap.get(cse.recordTypeID).name.containsIgnoreCase('IHG Javelin Tech Support'))){
+if (((c.re == true)||(c.Status == 'Assigned'))&&((c.SlaStartDate 
+<= completionDate)&&(c.SlaExitDate == null)))
+updateCases.add(c.Id);
+}
+}
+if (updateCases.isEmpty() == false)
+milestoneUtils.completeMilestone(updateCases, 'Response Time', completionDate);
+
+}
+
+*/   
+    
+    /**
+* This is a Class for CaseTriggerHandler
+* @author :  Accenture -Arun    
+* @version : 1.0
+* @objects Referenced :  Flow for T&C email for HCM request 
+* @Modified :Accenture Kishan (New Email set to customer and assigning correct email to hotel seller and customer)
+
+* @Created Date: 06/17/2019
+*/
+    //Arun: US79367 New Flow for HCM
+    public static void sendHCMEmailTC(List <case> TriggerNewCaseList){
+        try{
+            // List<Case>NewCaseCroppAccReq = new List<Case>(TriggerNewCaseList());
+            
+            
+            
+            List<Id> accId = new List<Id>();
+            set<id> casePrdId = new set<id>();
+            Boolean showDuplicateError = false;
+            List<String> listOfEmails = new List<String>();
+            Map<String,String> mapOfExistingContacts = new Map<String,String>();
+            for(Case iterCase : TriggerNewCaseList){
+                if(iterCase.Request_Channel__c == 'HCM' && iterCase.Status == 'Closed' && iterCase.IHGBE_Request__c == true){
+                    
+                    accId.add(iterCase.AccountId);
+                    listOfEmails.add(iterCase.cc_Email__c); 
+                    casePrdId.add(iterCase.Production_Source__c);
+                    
+                    
+                    
+                    List<Contact> emailConList = [Select Id,email,SME_Member_Status_List__c from Contact where  Email IN: listOfEmails];
+                    if(emailConList.size() > 0 ){
+                        for(contact c: emailConList){
+                            if(c.SME_Member_Status_List__c != REMOVED){
+                                showDuplicateError = true;
+                            }
+                        }
+                    }
+                    
+                    
+                    
+                    
+                    if(!showDuplicateError){
+                        
+                        Production_Source__c sAccount=[select id,Corporate_ID_Number_Display__c from Production_Source__c where Account_Name__c =: accId and id =: casePrdId];
+                        list<account> accList =[Select Id,Name, BillingCity, BillingCountry, BillingPostalCode, BillingState, BillingStreet from Account Where Id =: accId];
+                        
+                        
+                        
+                        list<contact> conList = new List<Contact>(); 
+                        Contact newCon = new Contact();
+                        newCon.FirstName = iterCase.CC_First_Name__c;
+                        newCon.LastName = iterCase.CC_Last_Name__c;
+                        newCon.Email = iterCase.cc_Email__c;
+                        //  newCon.Communities__c = 'IHG Business Edge';
+                        
+                        // newCon.IHG_Rewards_no__c='166598150';
+                        //  newCon.SME_Member_Status_List__c = 'Administrator';
+                        //newCon.Key_Contact__c = False;
+                        newCon.AccountId = accList[0].Id;
+                        newCon.MailingCity = accList[0].BillingCity;
+                        newCon.MailingState = accList[0].BillingState;
+                        newCon.MailingCountry = accList[0].BillingCountry;
+                        newCon.MailingPostalCode = accList[0].BillingPostalCode;
+                        newCon.MailingStreet = accList[0].BillingStreet;
+                        // newCon.Comments_Reasons_Other__c = COLLEAGUEINV;
+                        /* if(mapOfExistingContacts.containsKey(newCon.Email)){
+newCon.Id = mapOfExistingContacts.get(newCon.Email);
+}*/
+                        //system.debug('********check*****'+newCon.Communities__c);
+                        conList.add(newCon);
+                        if(conList.size() > 0){                     
+                            insert conList;                                                  
+                        }
+                        List<EmailTemplate> listOfTemplates= new List<EmailTemplate>();
+                        String emailTemplate = B2B_Utility.B2B_SendEmailTemplates(B2B_PRIMARY_INVITE,newCon.Email);
+                        //listOfTemplates = [Select Id, HtmlValue, Subject,body,DeveloperName FROM EmailTemplate WHERE DeveloperName = :B2B_SECONDARY_INVITED]; 
+                        listOfTemplates = [Select Id, HtmlValue, Subject,body,DeveloperName FROM EmailTemplate WHERE DeveloperName = :emailTemplate]; 
+                        
+                        if(listOfTemplates != null && !listOfTemplates.isEmpty()){
+                            String subject = listOfTemplates[0].Subject;
+                            subject = subject.replace(INSERT_COMPANY_NAME,accList[0].Name);
+                            
+                            for(Contact c : conList){
+                                
+                                String emailBody = listOfTemplates[0].HtmlValue;
+                                /*if(c.FirstName != null){
+c.FirstName = c.FirstName.replaceAll(SSS,TWENTY);
+}
+if(c.LastName != null){
+c.LastName = c.LastName.replaceAll(SSS,TWENTY);
+}*/
+                                
+                                String landingURL = Label.BE_Community_URL + landingURL4 +c.FirstName+ landingURL5 +c.LastName+ landingURL6 +c.Email+landingURL7+sAccount.Corporate_ID_Number_Display__c;
+                                //US57528 - replacing the URL with a "Click Here" hyperlink - 15th Dec, 18
+                                //landingURL = landingURL1 + landingURL +landingURL2 + Label.B2B_Secondary_UserRegistration_ClickHere_Text + landingURL3;
+                                emailBody = emailBody.replace(COMPANY_NAME, accList[0].Name);
+                                emailBody = emailBody.replace(XX, c.FirstName +' '+c.LastName);
+                                emailBody = emailBody.replace(LANDING_PAGE_LINK, landingURL);
+                                /*if (iterCase.hotel_Name__c!=Null){
+emailBody = emailBody.replace(HotelName,iterCase.Hotel_Name__c );
+}*/
+                                emailBody = emailBody.replace(GRSCorp,iterCase.GRS_Corporate_Account_ID__c);
+                                Utility.sendEmail(subject, c.Email, emailBody);
+                            }
+                            
+                        }       
+                        
+                    }
+                }
+            } 
+        }catch(Exception ex){		
+            system.debug('please check ccorrect croporate number '+ex.getMessage());
+            
+        }
+    }
+    //Arun Changes Ends 
+    
+}

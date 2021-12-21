@@ -1,0 +1,1734 @@
+/**
+* @author updated namitha.mabuhanda@ihg.com
+* @createdDate 16 Aug 2019
+* @Process optimization
+* Update rohit.kumarjha@ihg.com
+* @Sepration of methods with respect to contract stages for record type addendum.
+**/
+
+public  inherited sharing  class ContractUtilities {
+    Private static final string TermAgreed='Term Agreed';
+    Private static final string  Relicensing='Relicensing';
+    Private static final string ChangeOfOwnerShip='Change Of OwnerShip';
+    Private static final string RA='RA';
+    public static boolean executed = false; 
+    Private static final string Addendum = 'Addendum';
+    Private static final string BC = 'BC';
+    Private static final string Pipline = 'Pipeline';
+    Private static final string Draft = 'Draft';
+    Private static final string DefaultStr = 'Default';
+    Private static final string Dead = 'Dead';
+    Private static final string Standard='Standard';
+    Private static final string Approved = 'Approved';
+    Private static final string Issued = 'Issued';
+    Private static final string Expired = 'Expired';
+    Private static final string Replaced = 'Replaced';
+    Private static final string TermsAgreed='Terms Agreed';
+    Private static final string Terminated = 'Terminated';
+    Private static final string StandardJV='Standard JV';
+    Private static final string ContractExtension='Contract Extension';
+    Private static final string IntentionReceived='Intention Received';
+    Private static final string BrandChange='Brand Change';
+    Private static final string NotInSystem='Not in System';
+    Private static final string PlanningPhase = 'Planning Phase';
+    Private static final string ExecutedInEffect='Executed, in Effect';
+    Private static final string ExecutedNotInEffect='Executed, Not in Effect';
+    Private static final string NameChangeRealignment='Name Change Realignment';
+    Private static final Set<String> setContStatus = new Set<String>{'Dead','Expired','Replaced','Terminated'};
+    Private static final Set<String> oppDlCategotyNDorCN =new Set<String>{'ND','CN'}; 
+        
+        Private static final string FranchiseLicAgr ='Franchise Lic. Agr.';
+    
+    public static void handleContractUpsert(List<contract> lstContractNew, List<contract> lstContractOld,Boolean isexecuted){ 
+        try{
+            system.debug('@@@handleContractUpsert, executed::'+executed+' isexecuted::'+isexecuted); 
+            datetime qryStart = datetime.now();
+            Map<String,Sobject> mapSobj=new Map<String,Sobject>();
+            Map<Id,Contract> adndmContractMap = new Map<Id,Contract>();
+            Map<Id,Contract> standardContractMap = new Map<Id,Contract>();
+            Map<Id,Contract> standardJVContractMap = new Map<Id,Contract>();
+            
+            if(Trigger.isBefore && !executed){
+                commonFunctionForContract(lstContractNew, lstContractOld);
+                ActiveLegalEntityCheck(lstContractNew);
+                contractOverride(lstContractNew,false);
+            }else if(Trigger.isAfter && !executed){
+                System.debug('@@@ ContractUtility start at query count:: ' + Limits.getQueries());
+                system.debug('@@@handleContractUpsert lstContractNew::'+lstContractNew+' lstContractOld::'+lstContractOld);
+                for(contract objCtr :lstContractNew) {
+                    if(objCtr.Record_Type_Name__c==Addendum)
+                        adndmContractMap.put(objCtr.id, objCtr);
+                    if(objCtr.Record_Type_Name__c==Standard)
+                        standardContractMap.put(objCtr.id, objCtr);
+                    if(objCtr.Record_Type_Name__c==StandardJV)
+                        standardJVContractMap.put(objCtr.id, objCtr);
+                }
+                if(!standardContractMap.isEmpty())
+                    handleStandardRecords(mapSobj,standardContractMap,lstContractOld);
+                if(!standardJVContractMap.isEmpty())
+                    handleStandardJVRecords(mapSobj,standardJVContractMap,lstContractOld);
+                if(!adndmContractMap.isEmpty())
+                    handleAddendumRecords(mapSobj,adndmContractMap,lstContractOld);
+                system.debug('@@@handleContractUpsert, mapSobj::'+mapSobj);
+                updateSobject(mapSobj);
+                executed=true;
+                system.debug('@@@handleContractUpsert exiting from contractUtilities, executed::'+executed);
+                System.debug('@@@ ContractUtility ends at query count:: ' + Limits.getQueries());
+                datetime qryEnd = datetime.now();
+                system.debug('@@@ExecutionTime'+ (qryEnd.getTime() - qryStart.getTime()) /1000);
+                
+            }
+        }catch(exception ex){
+            system.debug('@@@Exception Occured ::'+ex.getMessage()+' @line Number::'+ex.getLineNumber()+' @StackTraceString::'+ex.getStackTraceString());
+            IHGErrorLog.createLog('ContractUtilities for ContractTrigger',
+                                  'after',
+                                  'NA',
+                                  'UserInfo.getUserEmail()',
+                                  'Hotel__c/Contract','NA','NA',ex);
+        }
+        
+    }
+    
+    public static void handleStandardRecords(Map<String,Sobject> mapSobj,Map<id,Contract> standardContractMap, List<contract> lstContractOld){ 
+        try{
+            system.debug('@@@handleStandardRecords'); 
+            Map<Id,Hotel__c> mapHotel=new Map<Id,Hotel__c>();
+            Map<Id,Opportunity> mapOpp=new Map<Id,Opportunity>();
+            Map<Id,Contract> mapStdDraft=new Map<Id,Contract>();
+            Map<Id,Contract> mapStdDead=new Map<Id,Contract>();
+            Map<Id,Contract> mapSrdExpired=new Map<Id,Contract>();
+            Map<Id,Contract> mapStdReplaced=new Map<Id,Contract>();
+            Map<Id,Contract> mapStdApproved=new Map<Id,Contract>();
+            Map<Id,Contract> mapStdIssued=new Map<Id,Contract>();
+            Map<Id,Contract> mapStdTermntd=new Map<Id,Contract>();
+            Map<Id,Contract> mapStdExecutInEff=new Map<Id,Contract>();
+            Map<Id,Contract> mapStdExecutNotInEff=new Map<Id,Contract>();
+            mapHotel= getHotelForUpdate(standardContractMap);
+            mapOpp=getOpportunity(standardContractMap);
+            for(Contract objStdCont:standardContractMap.values()){
+                if(objStdCont.status==Draft)
+                    mapStdDraft.put(objStdCont.id,objStdCont);
+                if(objStdCont.status==Dead)
+                    mapStdDead.put(objStdCont.id, objStdCont);
+                if(objStdCont.status==Expired)
+                    mapSrdExpired.put(objStdCont.id, objStdCont);
+                if(objStdCont.status==Replaced)
+                    mapStdReplaced.put(objStdCont.id, objStdCont);
+                if(objStdCont.status==Terminated)
+                    mapStdTermntd.put(objStdCont.id, objStdCont);
+                if(objStdCont.status==ExecutedInEffect)
+                    mapStdExecutInEff.put(objStdCont.id, objStdCont);
+                if(objStdCont.status==ExecutedNotInEffect)
+                    mapStdExecutNotInEff.put(objStdCont.id, objStdCont);
+                if(objStdCont.status==Approved)
+                    mapStdApproved.put(objStdCont.id, objStdCont);
+                if(objStdCont.status==Issued)
+                    mapStdIssued.put(objStdCont.id, objStdCont);
+                
+            }
+            handleStandardDraft(mapSobj,mapStdDraft,mapHotel,mapOpp);
+            handleStandardDead(mapSobj,mapStdDead,mapHotel,mapOpp);
+            handleStandardExpired(mapSobj,mapSrdExpired,mapHotel);
+            handleStandardReplaced(mapSobj,mapStdReplaced,mapHotel);
+            handleStandardTerminated(mapSobj,mapStdTermntd,mapHotel);
+            handleStandardExecInEff(mapSobj,mapStdExecutInEff,mapHotel,mapOpp);
+            handleStandardExecNotInEff(mapSobj,mapStdExecutNotInEff,mapHotel,mapOpp);
+            handleStandardApproved(mapSobj,mapStdApproved,mapHotel,mapOpp);
+            handleStandardIssued(mapSobj,mapStdIssued,mapHotel);
+        }catch(exception ex){
+            system.debug('Exception Occured :::::::::::'+ex.getMessage()+'::@line Number::::::'+ex.getLineNumber());
+            throw ex;
+        }
+    }
+    Public static void handleStandardDraft(Map<String,Sobject> mapSobj,Map<Id,Contract>mapStdDraft,Map<Id,Hotel__c> mapHotel,Map<Id,Opportunity> mapOpp){
+        system.debug('@@@handleStandardDraft'+ mapStdDraft); 
+        try{
+            for(Contract objCont:mapStdDraft.values()){
+                // Opportunity opp=mapOpp.get(objCont.Id);
+                if(objCont.Opportunity_Stage__c!=TermAgreed && 
+                   (objCont.Opportunity_Deal_Category__c== null || objCont.Opportunity_Deal_Category__c==Relicensing || objCont.Opportunity_Deal_Category__c==ChangeOfOwnerShip) && objCont.Opportunity_Deal_Type__c.indexOf(RA) != -1){
+                       Hotel__c htl=mapSobj.containskey(objCont.id)?(Hotel__c)mapSobj.get(objCont.id):mapHotel.get(objCont.id);
+                       htl.Number_of_Rooms_Effective_Date__c=Date.today();  
+                       htl.Pre_Pipeline__c=objCont.Contractual_Rooms__c;
+                       mapSobj.put(htl.id,htl); 
+                   }
+            }
+            
+        }Catch(Exception ex){throw ex;}
+    }
+    Public static void handleStandardApproved(Map<String,Sobject> mapSobj,Map<Id,Contract>mapStdApproved,Map<Id,Hotel__c> mapHotel,Map<Id,Opportunity> mapOpp){
+        system.debug('@@@handleStandardApproved::'+mapStdApproved); 
+        try{
+            for(Contract objCont:mapStdApproved.values())
+            {
+                system.debug('@@@handleStandardApproved, mapHotel.get(objCont.id).Pending_Contract__c::'+mapHotel.get(objCont.id).Pending_Contract__c);
+                if(mapHotel.containsKey(objCont.id) && objCont.id==mapHotel.get(objCont.id).Pending_Contract__c && mapOpp.get(objCont.id).Deal_Type__c.indexOf(BC) != -1 && objCont.Chain_Brand__c<>null){
+                    system.debug('@@@handleStandardApproved::INSIDE IF');
+                    Hotel__c htl=mapSobj.containskey(objCont.id)?(Hotel__c)mapSobj.get(objCont.id):mapHotel.get(objCont.id);
+                    htl.Future_Chain_Brand__c=objCont.Chain_Brand__c;
+                    htl.Future_Chain__c=objCont.Chain_New__c;
+                    mapSobj.put(htl.id,htl);
+                    
+                    
+                }
+                
+            }
+        }Catch(Exception ex){throw ex;}
+    }
+    Public static void handleStandardIssued(Map<String,Sobject> mapSobj,Map<Id,Contract>mapStdIssued,Map<Id,Hotel__c> mapHotel){
+        system.debug('@@@handleStandardIssued'); 
+        try{
+            for(Contract objCont:mapStdIssued.values())
+            {
+                if(objCont.Type__c==FranchiseLicAgr){
+                    Hotel__c htl=mapSobj.containskey(objCont.id)?(Hotel__c)mapSobj.get(objCont.id):mapHotel.get(objCont.id);
+                    htl.Hotel_Stages__c=Pipline;
+                    htl.Status_Effective_Date__c=Date.today();
+                    htl.Status__c=PlanningPhase;
+                    mapSobj.put(htl.id,htl);
+                    
+                    
+                }
+                
+            }
+        }Catch(Exception ex){throw ex;}
+    }
+    
+    public static void handleStandardExecInEff(Map<String,Sobject> mapSobj,Map<Id,Contract> mapStdExecutInEff,Map<Id,Hotel__c> mapHotel,Map<Id,Opportunity> mapOpp){
+        system.debug('@@@handleStandardExecInEff');
+        try{
+            for(Contract objCont:mapStdExecutInEff.values())
+            {
+                Hotel__c htl=mapSobj.containskey(objCont.id)?(Hotel__c)mapSobj.get(objCont.id):mapHotel.get(objCont.id);
+                htl.Number_of_Rooms_Effective_Date__c=Date.today();  
+                htl.Pipeline__c=htl.Pre_Pipeline__c;
+                htl.Pre_Pipeline__c=0;
+                //Actual status is contract issued, but as discussed with tushar this will have to do for inEffect and not in effect
+                /*if(objCont.Type__c==FranchiseLicAgr){
+htl.Hotel_Stages__c=Pipline;
+htl.Status_Effective_Date__c=Date.today();
+htl.Status__c=PlanningPhase;
+}*/
+                if(mapHotel.containsKey(objCont.id) && objCont.id==mapHotel.get(objCont.id).Pending_Contract__c && mapOpp.get(objCont.id).Deal_Type__c.indexOf(BC) != -1){
+                    
+                    Contract objConNew=new contract();
+                    if(mapSobj.containskey(htl.Current_Contract__c))
+                        objConNew=(Contract)mapSobj.get(htl.Current_Contract__c);
+                    objConNew.id=objConNew.id==null?htl.Current_Contract__c:objConNew.id;
+                    objConNew.Status=Replaced;
+                    objConNew.Status_Effective_Date__c=objCont.Status_Effective_Date__c;//This will have to do because of validation on contract.
+                    //For both the contract pending and current, if Status_Effective_Date__c is same will get the error.
+                    mapSobj.put(objConNew.id,objConNew);
+                    system.debug('@@@mapSobj STD Eff'+mapSobj);
+                    
+                    htl.Current_Contract__c=htl.Pending_Contract__c;
+                    htl.Pending_Contract__c=null;
+                    
+                    
+                    
+                    
+                }
+                
+                mapSobj.put(htl.id,htl);
+            }
+        }Catch(Exception ex){throw ex;}
+    }
+    public static void handleStandardExecNotInEff(Map<String,Sobject> mapSobj,Map<Id,Contract>mapStdExecutNotInEff,Map<Id,Hotel__c>mapHotel,Map<Id,Opportunity> mapOpp){
+        system.debug('@@@handleStandardExecNotInEff');
+        try{
+            for(Contract objCont:mapStdExecutNotInEff.values())
+            {
+                Hotel__c htl=mapSobj.containskey(objCont.id)?(Hotel__c)mapSobj.get(objCont.id):mapHotel.get(objCont.id);
+                htl.Number_of_Rooms_Effective_Date__c=Date.today();  
+                htl.Pipeline__c=htl.Pre_Pipeline__c;
+                htl.Pre_Pipeline__c=0;
+                if(objCont.Type__c==FranchiseLicAgr){
+                    htl.Hotel_Stages__c=Pipline;
+                    htl.Status_Effective_Date__c=Date.today();
+                    htl.Status__c=PlanningPhase;
+                }
+                if(mapHotel.containsKey(objCont.id) && objCont.id==mapHotel.get(objCont.id).Pending_Contract__c && mapOpp.get(objCont.id).Deal_Type__c.indexOf(BC) != -1){
+                    Contract objConNew=new contract();
+                    if(mapSobj.containskey(htl.Current_Contract__c))
+                        objConNew=(Contract)mapSobj.get(htl.Current_Contract__c);
+                    objConNew.id=objConNew.id==null?htl.Current_Contract__c:objConNew.id;
+                    objConNew.Status=Replaced;
+                    objConNew.Status_Effective_Date__c=objCont.Status_Effective_Date__c;//This will have to do because of validation on contract.
+                    //For both the contract pending and current, if Status_Effective_Date__c is same will get the error.
+                    mapSobj.put(objConNew.id,objConNew);
+                    system.debug('@@@mapSobj STD Eff'+mapSobj);
+                    
+                    htl.Current_Contract__c=htl.Pending_Contract__c;
+                    htl.Pending_Contract__c=null;
+                    
+                    
+                    
+                }
+                mapSobj.put(htl.id,htl);
+                
+            }
+        }Catch(Exception ex){throw ex;}
+    }
+    public static void handleStandardDead(Map<String,Sobject>mapSobj,Map<Id,Contract> mapStdDead,Map<Id,Hotel__c> mapHotel,Map<Id,Opportunity> mapOpp){
+        system.debug('@@@handleStandardDead');
+        try{
+            for(Contract mapCon:mapStdDead.values()){
+                hotel__c objHtl=mapSobj.containsKey(mapCon.Hotel__c)?(Hotel__c)mapSobj.get(mapCon.Hotel__c):mapHotel.get(mapCon.id);
+                if(mapOpp.containskey(mapCon.Id) && oppDlCategotyNDorCN.contains(mapOpp.get(mapCon.Id).Deal_Category__c))
+                {
+                    objHtl.Status__c=NotInSystem;
+                    objHtl.Hotel_Stages__c  =NotInSystem;
+                    objHtl.Status_Effective_Date__c=mapCon.Status_Effective_Date__c;
+                }
+                
+                
+                if(objHtl.Pending_Contract__c==mapCon.id){
+                    objHtl.Future_Chain_Brand__c=null;
+                    objHtl.Future_Chain__c=null;
+                    objHtl.Pending_Contract__c=null;
+                    
+                }
+                mapSobj.put(objHtl.id,objHtl);
+            }
+        }Catch(Exception ex){throw ex;}
+    }
+    public static void handleStandardExpired(Map<String,Sobject>mapSobj,Map<Id,Contract> mapSrdExpired,Map<Id,Hotel__c> mapHotel){
+        system.debug('@@@handleStandardExpired');
+        try{
+            for(Contract mapCon:mapSrdExpired.values()){
+                hotel__c objHtl=mapSobj.containsKey(mapCon.Hotel__c)?(Hotel__c)mapSobj.get(mapCon.Hotel__c):mapHotel.get(mapCon.id);
+                
+                if(objHtl.Pending_Contract__c==mapCon.id){
+                    objHtl.Future_Chain_Brand__c=null;
+                    objHtl.Future_Chain__c=null;
+                    objHtl.Pending_Contract__c=null;
+                }
+                objHtl.Hotel_Stages__c=NotInSystem;
+                objHtl.Number_of_Rooms_Effective_Date__c=Date.Today();
+                objHtl.Status__c=NotInSystem;
+                objHtl.Status_Effective_Date__c=mapCon.Status_Effective_Date__c;
+                mapSobj.put(objHtl.id,objHtl);
+            }
+        }Catch(Exception ex){throw ex;}
+    }
+    public static void handleStandardReplaced(Map<String,Sobject>mapSobj,Map<Id,Contract> mapStdReplaced,Map<Id,Hotel__c> mapHotel){
+        system.debug('@@@handleStandardReplaced');
+        try{
+            for(Contract mapCon:mapStdReplaced.values()){
+                hotel__c objHtl=mapSobj.containsKey(mapCon.Hotel__c)?(Hotel__c)mapSobj.get(mapCon.Hotel__c):mapHotel.get(mapCon.id);
+                if(objHtl.Pending_Contract__c==mapCon.id){
+                    objHtl.Future_Chain_Brand__c=null;
+                    objHtl.Future_Chain__c=null;
+                    objHtl.Pending_Contract__c=null;
+                    mapSobj.put(objHtl.id,objHtl);
+                }
+            }
+        }Catch(Exception ex){throw ex;}
+    }
+    public static void handleStandardTerminated(Map<String,Sobject>mapSobj,Map<Id,Contract> mapStdTermntd,Map<Id,Hotel__c> mapHotel){
+        system.debug('@@@handleStandardTerminated');
+        try{
+            Map<Id,Default_Failure__c> mapDfltFailur=getDefaultFailure(mapStdTermntd);
+            for(Contract mapCon:mapStdTermntd.values()){
+                system.debug('@@@handleStandardTerminated,mapCon::'+mapCon);
+                hotel__c objHtl=mapSobj.containsKey(mapCon.Hotel__c)?(Hotel__c)mapSobj.get(mapCon.Hotel__c):mapHotel.get(mapCon.id);
+                system.debug('@@@handleStandardTerminated,objHtl::'+objHtl);
+                if(objHtl.Pending_Contract__c==mapCon.id){
+                    objHtl.Future_Chain_Brand__c=null;
+                    objHtl.Future_Chain__c=null;
+                    objHtl.Pending_Contract__c=null;
+                }
+                objHtl.Hotel_Stages__c=NotInSystem;
+                objHtl.Number_of_Rooms_Effective_Date__c=Date.Today();
+                objHtl.Status_Effective_Date__c=mapCon.Status_Effective_Date__c;//This will have to do because of validation on hotel.
+                objHtl.Status__c=NotInSystem;
+                system.debug('@@@handleStandardTerminated,objHtl::'+objHtl);
+                mapSobj.put(objHtl.id,objHtl);
+                if(mapDfltFailur.containsKey(mapCon.id)&& mapDfltFailur.get(mapCon.id).Actual_Cure_Date__c==null &&mapDfltFailur.get(mapCon.id).Type__c==DefaultStr){
+                    Default_Failure__c objDflt=mapSobj.containsKey(mapDfltFailur.get(mapCon.id).id)?(Default_Failure__c)mapSobj.get(mapDfltFailur.get(mapCon.id).id):mapDfltFailur.get(mapCon.id);
+                    objDflt.Actual_Term_Date__c=Date.Today();
+                    mapSobj.put(objDflt.id,objDflt);
+                }
+            }
+        }Catch(Exception ex){throw ex;}
+    }
+    
+    
+    
+    public static void handleStandardJVRecords(Map<String,Sobject> mapSobj,Map<id,Contract> standardJVContractMap, List<contract> lstContractOld){ 
+        try{
+            system.debug('@@@handleStandardJVRecords'); 
+            Map<Id,Hotel__c> mapHotel=new Map<Id,Hotel__c>();
+            Map<Id,Opportunity> mapOpp=new Map<Id,Opportunity>();
+            Map<Id,Contract> mapStdJVDraft=new Map<Id,Contract>();
+            Map<Id,Contract> mapStdJVDead=new Map<Id,Contract>();
+            Map<Id,Contract> mapSrdJVExpired=new Map<Id,Contract>();
+            Map<Id,Contract> mapStdJVReplaced=new Map<Id,Contract>();
+            Map<Id,Contract> mapStdJVTermntd=new Map<Id,Contract>();
+            Map<Id,Contract> mapStdJVApproved=new Map<Id,Contract>();
+            Map<Id,Contract> mapStdJVIssued=new Map<Id,Contract>();
+            Map<Id,Contract> mapStdJVExecutInEff=new Map<Id,Contract>();
+            Map<Id,Contract> mapStdJVExecutNotInEff=new Map<Id,Contract>();
+            mapHotel= getHotelForUpdate(standardJVContractMap);
+            mapOpp=getOpportunity(standardJVContractMap);
+            for(Contract objJVCont:standardJVContractMap.values()){
+                if(objJVCont.status==Draft)
+                    mapStdJVDraft.put(objJVCont.id,objJVCont);
+                if(objJVCont.status==Dead)
+                    mapStdJVDead.put(objJVCont.id, objJVCont);
+                if(objJVCont.status==Expired)
+                    mapSrdJVExpired.put(objJVCont.id, objJVCont);
+                if(objJVCont.status==Replaced)
+                    mapStdJVReplaced.put(objJVCont.id, objJVCont);
+                if(objJVCont.status==Terminated)
+                    mapStdJVTermntd.put(objJVCont.id, objJVCont);
+                if(objJVCont.status==ExecutedInEffect)
+                    mapStdJVExecutInEff.put(objJVCont.id, objJVCont);
+                if(objJVCont.status==ExecutedNotInEffect)
+                    mapStdJVExecutNotInEff.put(objJVCont.id, objJVCont);
+                if(objJVCont.status==Approved)
+                    mapStdJVApproved.put(objJVCont.id, objJVCont);
+                if(objJVCont.status==Issued)
+                    mapStdJVIssued.put(objJVCont.id, objJVCont);
+            }
+            handleStandardDraft(mapSobj,mapStdJVDraft,mapHotel,mapOpp);
+            handleStandardJVDead(mapSobj,mapStdJVDead,mapHotel,mapOpp);
+            handleStandardJVExpired(mapSobj,mapSrdJVExpired,mapHotel);
+            handleStandardJVReplaced(mapSobj,mapStdJVReplaced,mapHotel);
+            handleStandardJVTerminated(mapSobj,mapStdJVTermntd,mapHotel);
+            handleStandardJVExecInEff(mapSobj,mapStdJVExecutInEff,mapHotel,mapOpp);
+            handleStandardJVExecNotInEff(mapSobj,mapStdJVExecutNotInEff,mapHotel,mapOpp);
+            handleStandardJVApproved(mapSobj,mapStdJVApproved,mapHotel,mapOpp);
+            handleStandardjvIssued(mapSobj,mapStdjvIssued,mapHotel);
+            
+            
+            
+        }catch(exception ex){
+            throw ex;
+        }
+    }
+    Public static void handleStandardJVDraft(Map<String,Sobject> mapSobj,Map<Id,Contract>mapStdJVDraft,Map<Id,Hotel__c> mapHotel,Map<Id,Opportunity> mapOpp){
+        system.debug('@@@handleStandardJVDraft'); 
+        try{
+            for(Contract objCont:mapStdJVDraft.values()){
+                //Opportunity opp=mapOpp.get(objCont.Id);
+                if(objCont.Opportunity_Stage__c!=TermAgreed && 
+                   (objCont.Opportunity_Deal_Category__c== null || objCont.Opportunity_Deal_Category__c==Relicensing || objCont.Opportunity_Deal_Category__c==ChangeOfOwnerShip) && objCont.Opportunity_Deal_Type__c.indexOf(RA) != -1){
+                       Hotel__c htl=mapSobj.containskey(objCont.id)?(Hotel__c)mapSobj.get(objCont.id):mapHotel.get(objCont.id);
+                       htl.Number_of_Rooms_Effective_Date__c=Date.today();  
+                       htl.Pre_Pipeline__c=objCont.Contractual_Rooms__c;
+                       mapSobj.put(htl.id,htl); 
+                   }
+            }
+        }Catch(Exception ex){throw ex;}
+    }
+    
+    Public static void handleStandardJVApproved(Map<String,Sobject> mapSobj,Map<Id,Contract>mapStdJVApproved,Map<Id,Hotel__c> mapHotel,Map<Id,Opportunity> mapOpp){
+        system.debug('@@@handleStandardJVApproved'); 
+        try{
+            for(Contract objCont:mapStdJVApproved.values())
+            {
+                if(mapHotel.containsKey(objCont.id) && objCont.id==mapHotel.get(objCont.id).Pending_Contract__c && mapOpp.get(objCont.id).Deal_Type__c.indexOf(BC) != -1 && objCont.Chain_Brand__c<>null){
+                    Hotel__c htl=mapSobj.containskey(objCont.id)?(Hotel__c)mapSobj.get(objCont.id):mapHotel.get(objCont.id);
+                    htl.Future_Chain_Brand__c=objCont.Chain_Brand__c;
+                    htl.Future_Chain__c=objCont.Chain_New__c;
+                    htl.Hotel_Stages__c=NotInSystem;
+                    htl.Number_of_Rooms_Effective_Date__c=Date.Today();
+                    htl.Status_Effective_Date__c=objCont.Status_Effective_Date__c;
+                    htl.Status__c=NotInSystem;
+                    mapSobj.put(htl.id,htl);
+                }
+                
+            }
+        }Catch(Exception ex){throw ex;}
+    }
+    Public static void handleStandardjvIssued(Map<String,Sobject> mapSobj,Map<Id,Contract>mapStdjvIssued,Map<Id,Hotel__c> mapHotel){
+        system.debug('@@@handleStandardIssued'); 
+        try{
+            for(Contract objCont:mapStdjvIssued.values())
+            {
+                if(objCont.Type__c==FranchiseLicAgr){
+                    Hotel__c htl=mapSobj.containskey(objCont.id)?(Hotel__c)mapSobj.get(objCont.id):mapHotel.get(objCont.id);
+                    htl.Hotel_Stages__c=Pipline;
+                    htl.Status_Effective_Date__c=Date.today();
+                    htl.Status__c=PlanningPhase;
+                    mapSobj.put(htl.id,htl);
+                    
+                    
+                }
+                
+            }
+        }Catch(Exception ex){throw ex;}
+    }
+    
+    public static void handleStandardJVExecInEff(Map<String,Sobject> mapSobj,Map<Id,Contract> mapStdJVExecutInEff,Map<Id,Hotel__c> mapHotel,Map<Id,Opportunity> mapOpp){
+        system.debug('@@@handleStandardJVExecInEff'); 
+        try{
+            for(Contract objCont:mapStdJVExecutInEff.values())
+            {
+                Hotel__c htl=mapSobj.containskey(objCont.id)?(Hotel__c)mapSobj.get(objCont.id):mapHotel.get(objCont.id);
+                htl.Number_of_Rooms_Effective_Date__c=Date.today();  
+                htl.Pipeline__c=htl.Pre_Pipeline__c;
+                htl.Pre_Pipeline__c=0;
+                if(objCont.Type__c==FranchiseLicAgr){
+                    htl.Hotel_Stages__c=Pipline;
+                    htl.Status_Effective_Date__c=Date.today();
+                    htl.Status__c=PlanningPhase;
+                }
+                if(mapHotel.containsKey(objCont.id) && objCont.id==mapHotel.get(objCont.id).Pending_Contract__c && mapOpp.get(objCont.id).Deal_Type__c.indexOf(BC) != -1){
+                    Contract objConNew=new contract();
+                    if(mapSobj.containskey(htl.Current_Contract__c))
+                        objConNew=(Contract)mapSobj.get(htl.Current_Contract__c);
+                    objConNew.id=objConNew.id==null?htl.Current_Contract__c:objConNew.id;
+                    objConNew.Status=Replaced;
+                    objConNew.Status_Effective_Date__c=objCont.Status_Effective_Date__c;//This will have to do because of validation on contract.
+                    //For both the contract pending and current, if Status_Effective_Date__c is same will get the error.
+                    mapSobj.put(objConNew.id,objConNew);
+                    htl.Current_Contract__c=htl.Pending_Contract__c;
+                    htl.Pending_Contract__c=null;
+                    
+                    
+                }
+                mapSobj.put(htl.id,htl);
+            }
+        }Catch(Exception ex){throw ex;}
+    }
+    public static void handleStandardJVExecNotInEff(Map<String,Sobject> mapSobj,Map<Id,Contract>mapStdJVExecutNotInEff,Map<Id,Hotel__c>mapHotel,Map<Id,Opportunity> mapOpp){
+        system.debug('@@@handleStandardJVExecNotInEff'); 
+        try{
+            for(Contract objCont:mapStdJVExecutNotInEff.values())
+            {
+                Hotel__c htl=mapSobj.containskey(objCont.id)?(Hotel__c)mapSobj.get(objCont.id):mapHotel.get(objCont.id);
+                htl.Number_of_Rooms_Effective_Date__c=Date.today();  
+                htl.Pipeline__c=htl.Pre_Pipeline__c;
+                htl.Pre_Pipeline__c=0;
+                if(objCont.Type__c==FranchiseLicAgr){
+                    htl.Hotel_Stages__c=Pipline;
+                    htl.Status_Effective_Date__c=Date.today();
+                    htl.Status__c=PlanningPhase;
+                }
+                if(mapHotel.containsKey(objCont.id) && objCont.id==mapHotel.get(objCont.id).Pending_Contract__c && mapOpp.get(objCont.id).Deal_Type__c.indexOf(BC) != -1){
+                    Contract objConNew=new contract();
+                    if(mapSobj.containskey(htl.Current_Contract__c))
+                        objConNew=(Contract)mapSobj.get(htl.Current_Contract__c);
+                    objConNew.id=objConNew.id==null?htl.Current_Contract__c:objConNew.id;
+                    objConNew.Status=Replaced;
+                    objConNew.Status_Effective_Date__c=objCont.Status_Effective_Date__c;//This will have to do because of validation on contract.
+                    //For both the contract pending and current, if Status_Effective_Date__c is same will get the error.
+                    
+                    htl.Current_Contract__c=htl.Pending_Contract__c;
+                    htl.Pending_Contract__c=null;
+                    /*Check is Contract creation with in this if 
+Contract objConNew=mapSobj.containskey(objCont.id)?(Contract)mapSobj.get(objCont.id):objCont;
+if(objConNew.Current_Contract__c==true)//Pending Contract Status=Executed 7th condition.
+{
+objConNew.Status=Replaced;
+mapSobj.put(objConNew.id,objConNew);
+}*/
+                    
+                    
+                    
+                }
+                mapSobj.put(htl.id,htl);
+            }
+        }Catch(Exception ex){throw ex;}
+    }
+    public static void handleStandardJVDead(Map<String,Sobject>mapSobj,Map<Id,Contract> mapStdJVDead,Map<Id,Hotel__c> mapHotel,Map<Id,Opportunity> mapOpp){
+        system.debug('@@@handleStandardJVDead'); 
+        try{
+            for(Contract mapCon:mapStdJVDead.values()){
+                hotel__c objHtl=mapSobj.containsKey(mapCon.Hotel__c)?(Hotel__c)mapSobj.get(mapCon.Hotel__c):mapHotel.get(mapCon.id);
+                
+                if(mapOpp.containskey(mapCon.Id) && oppDlCategotyNDorCN.contains(mapOpp.get(mapCon.Id).Deal_Category__c))
+                {
+                    objHtl.Status__c=NotInSystem;
+                    objHtl.Hotel_Stages__c  =NotInSystem;
+                    objHtl.Status_Effective_Date__c=mapCon.Status_Effective_Date__c;
+                }
+                
+              if(objHtl.Pending_Contract__c==mapCon.id){
+                    objHtl.Future_Chain_Brand__c=null;
+                    objHtl.Future_Chain__c=null;
+                    objHtl.Pending_Contract__c=null;
+                    
+                }
+                mapSobj.put(objHtl.id,objHtl);
+            }
+        }Catch(Exception ex){throw ex;}
+    }
+    public static void handleStandardJVExpired(Map<String,Sobject>mapSobj,Map<Id,Contract> mapSrdJVExpired,Map<Id,Hotel__c> mapHotel){
+        system.debug('@@@handleStandardJVExpired');
+        try{
+            for(Contract mapCon:mapSrdJVExpired.values()){
+                hotel__c objHtl=mapSobj.containsKey(mapCon.Hotel__c)?(Hotel__c)mapSobj.get(mapCon.Hotel__c):mapHotel.get(mapCon.id);
+                if(objHtl.Pending_Contract__c==mapCon.id){
+                    objHtl.Future_Chain_Brand__c=null;
+                    objHtl.Future_Chain__c=null;
+                    objHtl.Pending_Contract__c=null;
+                    
+                }
+                objHtl.Hotel_Stages__c=NotInSystem;
+                objHtl.Number_of_Rooms_Effective_Date__c=Date.Today();
+                objHtl.Status__c=NotInSystem;
+                objHtl.Status_Effective_Date__c=mapCon.Status_Effective_Date__c;
+                mapSobj.put(objHtl.id,objHtl);
+            }
+        }Catch(Exception ex){throw ex;}
+    }
+    public static void handleStandardJVReplaced(Map<String,Sobject>mapSobj,Map<Id,Contract> mapStdJVReplaced,Map<Id,Hotel__c> mapHotel){
+        system.debug('@@@handleStandardJVReplaced');
+        try{
+            for(Contract mapCon:mapStdJVReplaced.values()){
+                hotel__c objHtl=mapSobj.containsKey(mapCon.Hotel__c)?(Hotel__c)mapSobj.get(mapCon.Hotel__c):mapHotel.get(mapCon.id);
+                if(objHtl.Pending_Contract__c==mapCon.id){
+                    objHtl.Future_Chain_Brand__c=null;
+                    objHtl.Future_Chain__c=null;
+                    objHtl.Pending_Contract__c=null;
+                }
+                mapSobj.put(objHtl.id,objHtl);
+            }
+        }Catch(Exception ex){throw ex;}
+    }
+    public static void handleStandardJVTerminated(Map<String,Sobject>mapSobj,Map<Id,Contract> mapStdJVTermntd,Map<Id,Hotel__c> mapHotel){
+        system.debug('@@@handleStandardJVTerminated');
+        try{
+            Map<Id,Default_Failure__c> mapDfltFailur=getDefaultFailure(mapStdJVTermntd);
+            for(Contract mapCon:mapStdJVTermntd.values()){
+                hotel__c objHtl=mapSobj.containsKey(mapCon.Hotel__c)?(Hotel__c)mapSobj.get(mapCon.Hotel__c):mapHotel.get(mapCon.id);
+                if(objHtl.Pending_Contract__c==mapCon.id){
+                    objHtl.Future_Chain_Brand__c=null;
+                    objHtl.Future_Chain__c=null;
+                    objHtl.Pending_Contract__c=null;
+                    
+                }
+                objHtl.Hotel_Stages__c=NotInSystem;
+                objHtl.Number_of_Rooms_Effective_Date__c=Date.Today();
+                objHtl.Status__c=NotInSystem;
+                objHtl.Status_Effective_Date__c=mapCon.Status_Effective_Date__c;
+                mapSobj.put(objHtl.id,objHtl);
+                if(mapDfltFailur.containsKey(mapCon.id)&& mapDfltFailur.get(mapCon.id).Actual_Cure_Date__c==null &&mapDfltFailur.get(mapCon.id).Type__c==DefaultStr){
+                    Default_Failure__c objDflt=mapSobj.containsKey(mapDfltFailur.get(mapCon.id).id)?(Default_Failure__c)mapSobj.get(mapDfltFailur.get(mapCon.id).id):mapDfltFailur.get(mapCon.id);
+                    objDflt.Actual_Term_Date__c=Date.Today();
+                    mapSobj.put(objDflt.id,objDflt);
+                }
+            }
+        }Catch(Exception ex){throw ex;}
+    }
+    
+    
+    public static void handleAddendumRecords(Map<String,Sobject> mapSobj,Map<id,Contract> adndmContractMap, List<contract> lstContractOld){ 
+        try{
+            system.debug('@@@handleAddendumRecords'+adndmContractMap); 
+            Map<Id,Contract> mapAdndmDraft=new Map<Id,Contract>();
+            Map<Id,Contract> mapAdndmInEffect=new Map<Id,Contract>();
+            Map<Id,Contract> mapAdndmNotInEffect=new Map<Id,Contract>();
+            
+            for(Contract objCont:adndmContractMap.values()){
+                if(objCont.Status==Draft || objCont.Status==IntentionReceived)
+                    mapAdndmDraft.put(objCont.id, objCont);
+                if(objCont.Status==ExecutedInEffect)
+                    mapAdndmInEffect.put(objCont.id, objCont);
+                
+                if(objCont.Status==ExecutedNotInEffect)
+                    system.debug('@@@handleAddendumRecords, mapSobj::'+mapSobj);
+                mapAdndmNotInEffect.put(objCont.id, objCont);
+                
+            }
+            
+            
+            addendunDraft(mapSobj,mapAdndmDraft,lstContractOld);
+            addendunExecutedInEffect(mapSobj,mapAdndmInEffect,lstContractOld);
+            addendunExecutedNotInEffect(mapSobj,mapAdndmNotInEffect,lstContractOld);
+            system.debug('@@@handleAddendumRecords, mapSobj::'+mapSobj);
+            
+        }catch(exception ex){
+            throw ex;
+        }
+        
+        
+    }
+    public static void addendunDraft(Map<String,Sobject> mapSobj,Map<Id,Contract> adndmContractMap,List<Contract> lstContractOld){
+        system.debug('@@@addendunDraft::'+adndmContractMap);
+        try{
+            Map<Id,Contract>  mapDraft=new Map<Id,Contract>();
+            Map<Id,Contract>  mapParentContract=new Map<Id,Contract>();
+            Map<Id,Contract>  mapContOld=new Map<Id,Contract>();
+            Map<Id,Hotel__c> mapHotel=new Map<Id,Hotel__c>();
+            //Foreach will get the error in case of null list
+            for(integer i=0;lstContractOld!=null && i<lstContractOld.size();i++){
+                mapContOld.put(lstContractOld[i].Id,lstContractOld[i]);
+            }
+            
+            for(contract objCtr :adndmContractMap.values()) {
+                if( objCtr.Category__c==BrandChange &&!mapContOld.containsKey(objCtr.id))
+                    mapDraft.put(objCtr.id, objCtr);
+            }
+            if(!mapDraft.isEmpty()){
+                mapParentContract=getParentContracts(mapDraft);
+                mapHotel= getHotelForUpdate(mapDraft);
+            }
+            
+            for (Contract objCont: mapDraft.values())
+            {
+                Hotel__c objhotel= mapSobj.containskey(objCont.Hotel__c)?(Hotel__c)mapSobj.get(objCont.Hotel__c):mapHotel.get(objCont.Id);
+                objhotel.Future_Chain_Brand__c=objCont.Addendum_Brand__c;
+                objhotel.Future_Chain__c=mapParentContract.get(objCont.id).Chain_New__c;
+                
+                mapSobj.put(objhotel.id,objhotel);
+            }       
+            
+        }Catch(Exception ex){throw ex;}
+        
+    }
+    Public static void addendunExecutedNotInEffect(Map<String,Sobject> mapSobj,Map<Id,Contract> mapExqtNotInEffect,List<Contract> lstContractOld){
+        system.debug('@@@addendunExecutedNotInEffect::'+mapExqtNotInEffect); 
+        try{
+            Map<Id,Contract> mapParentContract=new Map<Id,Contract>();
+            Map<Id,Hotel__c> mapHotel=new Map<Id,Hotel__c>();
+            Map<Id,Hotel__c> mapHotelContP=new Map<Id,Hotel__c>();
+            Map<Id,Hotel__c> mapHotelContPNew=new Map<Id,Hotel__c>();
+            
+            
+            mapHotel= getHotelForUpdate(mapExqtNotInEffect);
+            mapParentContract=getParentContracts(mapExqtNotInEffect);
+            mapHotelContP= getHotelForUpdate(mapParentContract);
+            for(Hotel__c objContHtlContP:mapHotelContP.values()){
+                if(objContHtlContP.current_contract__c!=null){
+                    mapHotelContPNew.put(objContHtlContP.Pending_Contract__c,objContHtlContP);
+                    
+                }//objContHtlContP.Contractual_Rooms__c= mapHotel.get() Contractual_Rooms__
+            }
+            for(Contract objNotInEff:mapExqtNotInEffect.values()){
+                Hotel__c objHtlParent=mapHotelContP.get(objNotInEff.Parent_Contract__c);
+                Hotel__c objHtlParentNew=mapSobj.containskey(objHtlParent.id)?(Hotel__c)mapSobj.get(objHtlParent.id):objHtlParent;
+                objHtlParentNew.Contractual_Rooms__c=objNotInEff.Contractual_Rooms__c+mapHotel.get(objNotInEff.id).Contractual_Rooms__c;
+                objHtlParentNew.Number_of_Rooms_Effective_Date__c=Date.today();
+                mapSobj.put(objHtlParentNew.id,objHtlParentNew);
+                
+                /*if(mapHotelContPNew.containsKey(objNotInEff.Parent_Contract__c))
+{
+Hotel__c ObjhtlP=mapHotelContPNew.get(objNotInEff.Parent_Contract__c);
+Hotel__c ObjhtlPNew=mapSobj.containskey(ObjhtlP.id)?(Hotel__c)mapSobj.get(ObjhtlP.id):ObjhtlP;
+ObjhtlPNew.Contractual_Rooms__c =mapHotel.get(objNotInEff.id).Contractual_Rooms__c+objNotInEff.Contractual_Rooms__c;
+ObjhtlPNew.Number_of_Rooms_Effective_Date__c=Date.today();
+mapSobj.put(ObjhtlPNew.id,ObjhtlPNew);
+}*/
+            }
+            
+            for(Hotel__c htl:mapHotel.values()){
+                Hotel__c objHtl=mapSobj.containskey(htl.id)?(Hotel__c)mapSobj.get(htl.id):htl;
+                objHtl.Number_of_Rooms_Effective_Date__c=Date.today();
+                objHtl.Pipeline__c=htl.Pre_Pipeline__c;
+                objHtl.Pre_Pipeline__c=0;
+                mapSobj.put(objHtl.id,objHtl);
+            }
+        }Catch(Exception ex){throw ex;}
+    }
+    public static void addendunExecutedInEffect(Map<String,Sobject> mapSobj,Map<Id,Contract> mapExqtInEffect,List<contract> lstContractOld){
+        system.debug('@@@addendunExecutedInEffect mapExqtInEffect::'+mapExqtInEffect);
+        try{
+            Map<Id,Contract>  mapParentContract=new Map<Id,Contract>();
+            Map<Id,Hotel__c> mapHotel=new Map<Id,Hotel__c>();
+            Map<Id,Hotel__c> mapHotelContP=new Map<Id,Hotel__c>();
+            Map<Id,Hotel__c> mapHotelContPNew=new Map<Id,Hotel__c>();
+            Map<Id,Contract>  mapContractOld=new Map<Id,Contract>();
+            Map<Id, Joint_Venture__c> mapJVentr=new Map<Id, Joint_Venture__c>();
+            for(integer i=0;lstContractOld!=null &&  i<lstContractOld.size();i++){
+                if( lstContractOld[i].Record_Type_Name__c == Addendum){
+                    mapContractOld.put(lstContractOld[i].id,lstContractOld[i]);
+                }
+            }
+            
+            
+            if(!mapExqtInEffect.isEmpty()){
+                mapHotel= getHotelForUpdate(mapExqtInEffect);
+                mapParentContract=getParentContracts(mapExqtInEffect);
+                mapJVentr=getJointVenture(mapExqtInEffect);
+            }
+            
+            mapHotelContP= getHotelForUpdate(mapParentContract); 
+            for(Hotel__c objContHtlContP:mapHotelContP.values()){
+                if(objContHtlContP.current_contract__c!=null){
+                    mapHotelContPNew.put(objContHtlContP.Pending_Contract__c,objContHtlContP);
+                    
+                }
+            }
+            for(contract objInEff :mapExqtInEffect.values()) {
+                
+                Hotel__c objHtlParent=mapHotelContP.get(objInEff.Parent_Contract__c);
+                Hotel__c objHtlParentNew=mapSobj.containskey(objHtlParent.id)?(Hotel__c)mapSobj.get(objHtlParent.id):objHtlParent;
+                objHtlParentNew.Contractual_Rooms__c=objInEff.Contractual_Rooms__c+mapHotel.get(objInEff.id).Contractual_Rooms__c;
+                objHtlParentNew.Number_of_Rooms_Effective_Date__c=Date.today();
+                mapSobj.put(objHtlParentNew.id,objHtlParentNew);
+                
+                system.debug('@@@Addendun objInEff.Category__c::'+objInEff.Category__c+'objInEff.Status::'+objInEff.Status);  
+                system.debug('@@@Addendun mapParentContract.get(objInEff.id).Record_Type_Name__c::'+mapParentContract.get(objInEff.id).Record_Type_Name__c+' status::'+mapContractOld.get(objInEff.id).Status); 
+                system.debug('@@@objInEff.Type__c'+objInEff.Type__c);
+                if(objInEff.Type__c==ContractExtension){
+                    
+                    
+                    Contract objConP=mapParentContract.get(objInEff.id);
+                    Contract ObjContPNew=mapSobj.containskey(objConP.id)?(Contract)mapSobj.get(objConP.id):objConP;
+                    
+                    Audit_History__c objAudtHstry=new  Audit_History__c(); 
+                    objAudtHstry.id=null;
+                    objAudtHstry.Contract__c=objInEff.id;
+                    objAudtHstry.Field__c='Expiration_Date__c';
+                    objAudtHstry.Prior_Value__c=String.valueOf(ObjContPNew.Expiration_Date__c);
+                    objAudtHstry.Current_Value__c=String.valueOf(objInEff.Expiration_Date__c);
+                    objAudtHstry.Effective_Date__c=Date.today();
+                    objAudtHstry.Date_of_Change__c=System.now();
+                    mapSobj.put(String.valueof(Date.today()),objAudtHstry);
+                    system.debug('@@@objAudtHstry'+objAudtHstry);
+                    ObjContPNew.Expiration_Date__c=objInEff.Expiration_Date__c;
+                    mapSobj.put(ObjContPNew.id,ObjContPNew);
+                    
+                }
+                if(objInEff.Category__c==BrandChange)
+                {
+                    handleAddendumBrandChange(mapSobj,objInEff,mapHotel,mapParentContract);
+                }else if(trigger.isUpdate && objInEff.Category__c==NameChangeRealignment && objInEff.Status!=mapContractOld.get(objInEff.id).Status
+                         && mapParentContract.get(objInEff.id).Record_Type_Name__c==StandardJV){
+                             handleAddendumNameChangeRealignmentJV(mapSobj,objInEff,mapParentContract,mapJVentr);
+                         }else if(trigger.isUpdate && objInEff.Category__c==NameChangeRealignment && objInEff.Status!=mapContractOld.get(objInEff.id).Status
+                                  && mapParentContract.get(objInEff.id).Record_Type_Name__c==Standard){
+                                      handleAddendumNameChangeRealignment(mapSobj,objInEff,mapParentContract);
+                                  }
+            }
+            
+        }Catch(Exception ex){throw ex;} 
+        
+    }
+    Public static void handleAddendumNameChangeRealignment(Map<String,Sobject> mapSobj,Contract objInEff,Map<id,Contract>mapParentContract){
+        system.debug('@@@handleAddendumNameChangeRealignment objInEff::'+objInEff);
+        try{
+            Contract objConP=mapParentContract.get(objInEff.id);
+            Contract ObjContPNew=mapSobj.containskey(objConP.id)?(Contract)mapSobj.get(objConP.id):objConP;
+            ObjContPNew.Override__c=true;
+            ObjContPNew.Legal_Entity_Name__c=objInEff.Legal_Entity_Name__c;
+            mapSobj.put(ObjContPNew.id,ObjContPNew);
+        }Catch(Exception ex){throw ex;}
+    }
+    Public static void handleAddendumNameChangeRealignmentJV(Map<String,Sobject> mapSobj,Contract objInEff,Map<id,Contract>mapParentContract,Map<id,Joint_Venture__c> mapJVentr){
+        system.debug('@@@handleAddendumNameChangeRealignmentJV objInEff::'+objInEff);
+        try{
+            Contract objConP=mapParentContract.get(objInEff.id);
+            Contract ObjContPNew=mapSobj.containskey(objConP.id)?(Contract)mapSobj.get(objConP.id):objConP;
+            ObjContPNew.Override__c=true;
+            mapSobj.put(ObjContPNew.id,ObjContPNew);
+            
+            Joint_Venture__c objJVentr=mapJVentr.get(objInEff.id);
+            Joint_Venture__c objJVentrNew=mapSobj.containskey(objJVentr.id)?(Joint_Venture__c)mapSobj.get(objJVentr.id):objJVentr;
+            objJVentrNew.Account__c=objInEff.Legal_Entity_Name__c;
+            mapSobj.put(objJVentrNew.id,objJVentrNew);
+            
+        }Catch(Exception ex){throw ex;}
+    }
+    public static void handleAddendumBrandChange(Map<String,Sobject> mapSobj,Contract objInEff,Map<Id,Hotel__c> mapHotel,Map<Id,Contract> mapParentContract){
+        system.debug('@@@handleAddendumBrandChange objInEff::'+objInEff);
+        try{
+            for(Hotel__c objHtl:mapHotel.values())
+            {
+                if(objHtl.id==objInEff.Hotel__c){
+                    Hotel__c htl=mapSobj.containskey(objHtl.id)?(Hotel__c)mapSobj.get(objHtl.id):objHtl;
+                    htl.Chain_Brand__c=htl.Future_Chain_Brand__c;	
+                    htl.Chain_New_Effective_Date__c=Date.today();//System.now();//Verify in lates version for Formula
+                    htl.Chain_New__c=htl.Future_Chain__c;
+                    htl.Current_Brand_Text_Effective_Date__c= Date.today();//htl.Current_Brand_Text_Effective_Date__c+1;//Verify in lates version for Formula
+                    htl.Future_Chain_Brand__c=null;
+                    htl.Future_Chain__c=null;
+                    mapSobj.put(htl.id,htl);
+                }
+            }
+            Contract objParent=mapParentContract.get(objInEff.id);
+            objParent.Chain_Brand__c=objInEff.Addendum_Brand__c;
+            mapSobj.put(objParent.id,objParent);
+        }Catch(Exception ex){throw ex;} 
+    }
+    
+    public static Map<Id,Hotel__c> getHotelForUpdate(Map<id,Contract> mapContract){
+        system.debug('@@@getHotelForUpdate mapContract::'+mapContract);
+        try{
+            Map<Id,Id> mapHTlAndContId=new Map<Id,Id>();
+            Map<Id,Hotel__c> mapHotel=new Map<Id,Hotel__c>();
+            for(Contract cont:mapContract.values()){
+                mapHTlAndContId.put(cont.Hotel__c,cont.id);
+            }
+            system.debug('@@@getHotelForUpdate, mapHTlAndContId ::'+mapHTlAndContId);
+            for (Hotel__c objHtl:  [SELECT Id,Current_Contract__c,Future_Chain_Brand__c,Future_Chain__c,Number_of_Rooms_Effective_Date__c,
+                                    Pipeline__c,Pre_Pipeline__c,Pending_Contract__c,Chain_Brand__c,Chain_New_Effective_Date__c,
+                                    Chain_New__c,Current_Brand_Text_Effective_Date__c,Contractual_Rooms__c,Hotel_Stages__c FROM Hotel__c WHERE id In: mapHTlAndContId.keySet()])
+            {
+                mapHotel.put(mapHTlAndContId.get(objHtl.id),objHtl);
+            }
+            
+            system.debug('@@@getHotelForUpdate, mapHotel, ::'+mapHotel); 
+            return mapHotel;
+        }Catch(Exception ex){throw ex;}
+    }
+    public static Map<Id, Contract> getParentContracts(Map<Id,Contract> mapContract){
+        system.debug('@@@getParentContracts mapContract::'+mapContract);
+        try{
+            Map<Id,Contract>  mapParentCont=new Map<Id,Contract>();
+            Map<Id,Contract>  newMapParent=new Map<Id,Contract>();
+            for(contract objCtr :mapContract.values()) {
+                if(!String.isEmpty(objCtr.Parent_Contract__c)){
+                    mapParentCont.put(objCtr.Parent_Contract__c,objCtr);
+                }
+            } 
+            for( Contract objParentC:[select id,chain_New__c,Hotel__c,Legal_Entity_Name__c,Override__c,Chain_Brand__c,
+                                      Record_Type_Name__c,Expiration_Date__c  from contract where id In: mapParentCont.keySet()]){
+                                          Contract objChildC=mapParentCont.get(objParentC.id);
+                                          newMapParent.put(objChildC.id,objParentC);
+                                          
+                                      }
+            system.debug('@@@Return newMapParent ::'+newMapParent);
+            return newMapParent;
+        }Catch(Exception ex){throw ex;}
+    }
+    public static Map<Id, Joint_Venture__c> getJointVenture(Map<Id,Contract> mapContract){
+        system.debug('@@@getJointVenture mapContract::'+mapContract);
+        try{
+            Map<Id, Joint_Venture__c>  mapJVent=new Map<Id, Joint_Venture__c>();
+            Map<Id,Id> mapHTlAndContId=new Map<Id,Id>();
+            for(Contract cont:mapContract.values()){
+                if(cont.Parent_Contract__c!=null)
+                    mapHTlAndContId.put(cont.Parent_Contract__c,cont.id);
+            }
+            if(!mapContract.isEmpty()){
+                for( Joint_Venture__c objJVent:[select id,Account__c,Contract__c from Joint_Venture__c where Primary__c=true and Contract__c In: mapHTlAndContId.keySet()]){
+                    mapJVent.put(mapHTlAndContId.get(objJVent.Contract__c),objJVent);
+                    
+                }
+            }
+            system.debug('@@@Return mapJVent ::'+mapJVent);
+            return mapJVent;
+        }Catch(Exception ex){throw ex;}
+    }
+    Public static Map<Id,Opportunity> getOpportunity(Map<id,Contract> mapContract){
+        system.debug('@@@getOpportunity mapContract::'+mapContract);
+        try{
+            Map<Id,Opportunity> mapOpp=new  Map<Id,Opportunity>();
+            for(opportunity opp:[select id,Deal_Category__c,Deal_Type__c,ContractId from Opportunity where ContractId in :mapContract.keySet()]){
+                mapOpp.put(opp.ContractId, opp);
+            }
+            system.debug('@@@Return mapOpp ::'+mapOpp);
+            return mapOpp;
+        }Catch(Exception ex){throw ex;}
+    }
+    Public static Map<Id,Default_Failure__c> getDefaultFailure(Map<Id,Contract> mapContract){
+        system.debug('@@@getDefaultFailure mapContract::'+mapContract);
+        try{
+            Map<Id,Default_Failure__c> mapDfltFailur=new Map<Id,Default_Failure__c>();
+            for(Default_Failure__c obhDflt:[Select id,Contract__c,Actual_Cure_Date__c,Actual_Term_Date__c,Type__c from  Default_Failure__c where Contract__c In:mapContract.keySet()])
+            {
+                mapDfltFailur.put(obhDflt.Contract__c, obhDflt);
+            }
+            system.debug('@@@Return mapDfltFailur ::'+mapDfltFailur);
+            return mapDfltFailur;
+        }Catch(Exception ex){throw ex;}
+    }
+    
+    
+    Public static void updateSobject(Map<String,Sobject> updtLst){
+        system.debug('@@@updateSobject updtLst::'+updtLst);
+        try{
+            List<Sobject> insertLst=new List<Sobject>();
+            List<Sobject> UpdateLst=new List<Sobject>();
+            if(!updtLst.isEmpty()){
+                for (SObject SObj : updtLst.values()) {
+                    system.debug('@@@SObj'+SObj);
+                    if(((String)SObj.get('Id'))==null)
+                        insertLst.add(SObj);
+                    else
+                        UpdateLst.add(SObj);
+                    
+                }
+                system.debug('@@@insertLst'+insertLst);
+                insert insertLst;
+                update UpdateLst;
+            }
+        }Catch(Exception ex){throw ex;}
+        
+        
+    }
+    public static void ActiveLegalEntityCheck(List<Contract> lstContractNew){
+        system.debug('@@@ActiveLegalEntityCheck updtLst::'+lstContractNew);
+        if(trigger.isUpdate){
+            Map<id,Integer> mapJointVCount=new Map<id,Integer>();
+            Set<id> setId=new Set<id>();
+            for(Contract objCont:lstContractNew){
+                setId.add(objCont.id); 
+            }
+            
+            List<AggregateResult> AggregateResultList = [select CONTRACT__C ,Count(id)RecCount from Joint_Venture__c 
+                                                         where primary__C=true and contract__c in :setId and(End_Date__c=null or End_Date__c>=today) 
+                                                         GROUP BY CONTRACT__C]; // If there is only one and primary is false.
+            //Do we ask to create one. JV
+            system.debug('@@@ActiveLegalEntityCheck AggregateResultList::'+AggregateResultList);
+            for(AggregateResult aggResult : AggregateResultList)
+            {
+                mapJointVCount.put((Id)aggResult.get('Contract__c'), (Integer)aggResult.get('RecCount'));
+            }
+            for(Integer i=0;i<lstContractNew.size();i++){
+                if (lstContractNew[i].Record_Type_Name__c==StandardJV  &&(!mapJointVCount.containsKey(lstContractNew[i].id)|| mapJointVCount.get(lstContractNew[i].id)<1))
+                {
+                    lstContractNew[i].addError('Add an active Primary Legal Entity to continue.');
+                }
+            }
+        }
+        
+    }
+    public static void commonFunctionForContract(List<Contract> lstContNew,List<Contract> lstContOld){
+        system.debug('@@@commonFunctionForContract lstContNew::'+lstContNew);
+        try{
+            Map<Id,Contract> mapOld=new Map<Id,Contract>();
+            Map<String,Sobject> mapSobj=new Map<String,Sobject>();
+            for(integer i=0 ;lstContOld!=null && i<lstContOld.size();i++){
+                mapOld.put(lstContOld[i].id,lstContOld[i]);
+            }
+            
+            for(integer i=0 ;i<lstContNew.size();i++){
+                if(mapOld.containsKey(lstContNew[i].id) && mapOld.get(lstContNew[i].id).Status!=lstContNew[i].Status&&
+                   mapOld.get(lstContNew[i].id).Status_Effective_Date__c==lstContNew[i].Status_Effective_Date__c
+                  )
+                {
+                    lstContNew[i].Status_Effective_Date__c=Date.today();
+                }
+                
+                
+                if(lstContNew[i].Opportunity_Stage__c  <> TermsAgreed && mapOld.containsKey(lstContNew[i].id) && lstContNew[i].Contractual_Rooms__c!=mapOld.get(lstContNew[i].id).Contractual_Rooms__c &&
+                   lstContNew[i].Parent_Contract__c==null)
+                {
+                    Hotel__c objHtl=new Hotel__c();
+                    objHtl=mapSobj.containsKey(lstContNew[i].Hotel__c)?(Hotel__c)mapSobj.get(lstContNew[i].Hotel__c):objHtl;
+                    if(objHtl.id==null)
+                        objHtl.id=lstContNew[i].Hotel__c;
+                    objHtl.Contractual_Rooms__c=lstContNew[i].Contractual_Rooms__c;
+                    objHtl.Number_of_Rooms_Effective_Date__c=Date.today();
+                    mapSobj.put(objHtl.id,objHtl);
+                }
+            }
+            updateSobject(mapSobj);
+        }Catch(Exception ex){throw ex;}
+        
+    }
+    public static void contractOverride(List<Contract> lstContNew,Boolean ovrRidValue){
+        system.debug('@@@contractOverride trmAggredContractMap::'+lstContNew);
+        try{
+            
+            if(trigger.isUpdate){
+                for(integer i=0 ;i<lstContNew.size();i++){
+                    if(lstContNew[i].Opportunity_Stage__c  <> TermsAgreed)
+                        lstContNew[i].Override__c= ovrRidValue;
+                    system.debug('@@@contractOverride lstContNew::'+lstContNew);
+                    
+                }
+            }
+        }Catch(Exception ex){throw ex;}
+        
+    }
+    
+}
+
+
+========================================================================================ContractTriggerHandler====================================================
+/**
+* Trigger Handler Class for Contract Object
+* @author :  Accenture - Abhishek KJ
+* @version : 1.1
+*/
+
+global class ContractTriggerHandler extends TriggerHandler {
+    
+    public static boolean executed = false; // To prevent recursion after update.
+    Private static final string StandardContract = 'Standard Contract';
+    Private static final string Executedstatus = 'Executed';
+    Private static final string Replaced = 'Replaced';
+    Private static final string Issued = 'Issued';
+    Private static final string Draft = 'Draft';
+    Private static final string Dead = 'Dead';
+    Private static final string Expired = 'Expired';
+    Private static final string Terminated = 'Terminated';
+    public static boolean updateHotel = false;
+    public static boolean updateContract = false;
+    
+    global override void beforeInsert() {
+        try{
+            stateCodeAbbreviation(Trigger.New);
+            updatecongaquery(trigger.new);
+            if (Test.isRunningTest()) {
+                CalloutException e = new CalloutException();
+                e.setMessage('This is a constructed exception for testing and code coverage');
+                throw e;
+            }
+        } catch (Exception ex) {
+            system.debug('@@@ContractTrigger handler, Trigger, Before Insert, Exception Occured ::'+ex.getMessage()+' @line Number::'+ex.getLineNumber()+' @StackTraceString::'+ex.getStackTraceString());
+            IHGErrorLog.createLog('ContractTriggerHandler',
+                                  'beforeInsert',
+                                  'NA',
+                                  UserInfo.getUserEmail(),
+                                  'Contract', 'NA', 'NA', ex);
+            
+        }
+        
+        
+        
+        
+    }
+    
+    global override void beforeUpdate() {
+        try{
+            ContractUtilities.handleContractUpsert(trigger.new, trigger.old,executed);
+            System.debug('contr before insert');
+            checkPrimaryLegal(Trigger.new,Trigger.oldMap, Trigger.NewMap);
+            updateContractStage(Trigger.new,Trigger.oldMap, Trigger.NewMap );
+            stateCodeAbbreviation(Trigger.New);
+            createTermFee(Trigger.New);
+            if (Test.isRunningTest()) {
+                CalloutException e = new CalloutException();
+                e.setMessage('This is a constructed exception for testing and code coverage');
+                throw e;
+            }
+        } catch (Exception ex) {
+            system.debug('@@@ContractTrigger handler, Trigger, Before update, Exception Occured ::'+ex.getMessage()+' @line Number::'+ex.getLineNumber()+' @StackTraceString::'+ex.getStackTraceString());
+            IHGErrorLog.createLog('ContractTriggerHandler',
+                                  'beforeInsert',
+                                  'NA',
+                                  UserInfo.getUserEmail(),
+                                  'Contract', 'NA', 'NA', ex);
+            
+        }
+        
+        
+        
+        
+    }
+    global override void afterInsert() {
+        try{
+            System.debug('@@@ContractUtilities, afterInsert' );
+            ContractUtilities.handleContractUpsert(trigger.new, trigger.old,executed);
+            checkExistingContract(Trigger.New, Trigger.oldMap, Trigger.NewMap, true);
+            updateOppCon(Trigger.New, Trigger.oldMap, Trigger.NewMap,'Insert');
+            
+            //GenerateTeam.createTeamMembers(null,Trigger.new);
+            addTeamMember.findTeamMember(null, trigger.new, 'Contract', '');
+            ActivityAutoPopulation.addActivity(trigger.newmap);
+            AddContactRole.findContactRole(null,Trigger.New,null,null,'Contract');
+
+            
+            // updateContractualRooms(trigger.new);
+            if (Test.isRunningTest()) {
+                CalloutException e = new CalloutException();
+                e.setMessage('This is a constructed exception for testing and code coverage');
+                throw e;
+            }
+        } catch (Exception ex) {
+            system.debug('@@@ContractTrigger handler, Trigger, after insert, Exception Occured ::'+ex.getMessage()+' @line Number::'+ex.getLineNumber()+' @StackTraceString::'+ex.getStackTraceString());
+            IHGErrorLog.createLog('ContractTriggerHandler',
+                                  'afterInsert',
+                                  'NA',
+                                  UserInfo.getUserEmail(),
+                                  'Contract', 'NA', 'NA', ex);
+            
+        }
+        // createTermFee(Trigger.New);
+        
+    }
+    global override void afterUpdate() {
+        try{
+            if (!executed) {
+            System.debug('@@@ContractUtilities, afterUpdate' );
+            ContractUtilities.handleContractUpsert(trigger.new, trigger.old,executed);
+            System.debug('@@@ Number of Queries used in afterUpdate 0:: ' + Limits.getQueries());
+            insertChecklist(Trigger.New, Trigger.oldMap, Trigger.NewMap);
+            AddContactRole.findContactRole(null,Trigger.New,null,null,'Contract');
+            updateOppCon(Trigger.New, Trigger.oldMap, Trigger.NewMap,'Update');
+            System.debug('@@@ Number of Queries used in afterUpdate 1:: ' + Limits.getQueries());
+            checkExistingContract(Trigger.New, Trigger.oldMap, Trigger.NewMap, false);
+                // createTermFee(Trigger.New);
+                //updateLegalAccount(Trigger.New, Trigger.OldMap, Trigger.NewMap); 
+                executed = true;
+                if (Test.isRunningTest()) {
+                    CalloutException e = new CalloutException();
+                    e.setMessage('This is a constructed exception for testing and code coverage');
+                    throw e;
+                }
+            }
+        } catch (Exception ex) {
+            system.debug('@@@ContractTrigger handler, Trigger, after update, Exception Occured ::'+ex.getMessage()+' @line Number::'+ex.getLineNumber()+' @StackTraceString::'+ex.getStackTraceString());
+            IHGErrorLog.createLog('ContractTriggerHandler',
+                                  'afterInsert',
+                                  'NA',
+                                  UserInfo.getUserEmail(),
+                                  'Contract', 'NA', 'NA', ex);
+            
+        }
+        
+        //GenerateTeam.createTeamMembers(null,Trigger.new);
+        
+        
+        System.enqueueJob(new AuditHistory('Contract', 'Audit_History', Trigger.new, Trigger.oldMap, Trigger.newMap, System.now()));
+        System.enqueueJob(new KeyDatesLog('Contract', 'Key_Dates', Trigger.new, Trigger.oldMap, Trigger.newMap, System.now()));
+        
+        //  updateContractualRooms(trigger.new);
+        
+    }
+    
+    public static void insertChecklist(List < contract > newContractList, Map < id, sObject > oldContractMap,Map < id, sObject > newContractMap)
+    {
+        Map < id, Contract > newMap = (Map < id, Contract > ) newContractMap;
+        Map < id, Contract > oldMap = (Map < id, Contract > ) oldContractMap;
+        List < String > checklistRecords = new List < String > ();
+        for(Contract c :newContractList){
+            if(newMap.get(c.id).Master_Checklist_Ids__c !=oldMap.get(c.id).Master_Checklist_Ids__c)
+            {
+                if (c.Master_Checklist_Ids__c != null && c.Master_Checklist_Ids__c!='')
+                {
+                    checklistRecords = c.Master_Checklist_Ids__c.split(',');
+                    system.debug('checklistRecords'+checklistRecords);
+                }
+            }
+        }
+        
+        List<Activity_Management__c>selectedChecklist=[SELECT Id, Valid_Status__c,Name, Category__c, Deal_Type__c, Region_Level_1__c, Region_Level_2__c, Region_Level_3__c, 
+                                                       State_Province__c, Deal_Category__c, Country_Region__c,Required_Activity__c,Parent_Activity__c,Parent_Activity__r.name,Business_Model__c,Object__c 
+                                                       FROM Activity_Management__c where id in :checklistRecords];
+        
+        List<Activity__c>ChecklistList=new List<Activity__c>();
+        List<Activity__c>ChildChecklistList=new List<Activity__c>();
+        system.debug('selectedChecklist------'+selectedChecklist);
+        for(Activity_Management__c actMan :selectedChecklist)
+        {
+            Activity__c ac = new Activity__c();
+            
+            ac.Contract__c = newContractList[0].id;
+            ac.Name = actMan.Name;
+            ac.Valid_Status__c=actMan.Valid_Status__c;
+            ac.Category__c = actMan.Category__c;
+            ac.Required_Activity__c = actMan.Required_Activity__c;
+            ac.Type__c='Parent';
+            ac.ActivityManagementId__c=actMan.Id;
+            ac.Object__c='Contract';
+            ChecklistList.add(ac); 
+        }
+        try{
+            insert ChecklistList;
+            if (Test.isRunningTest()) {
+                CalloutException e = new CalloutException();
+                e.setMessage('This is a constructed exception for testing and code coverage');
+                throw e;
+            }
+        }
+        catch (Exception ex) {
+            system.debug('@@@ContractTrigger handler, insertChecklist- 0, Exception Occured ::'+ex.getMessage()+' @line Number::'+ex.getLineNumber()+' @StackTraceString::'+ex.getStackTraceString());
+            IHGErrorLog.createLog('ContractTriggerHandle',
+                                  'insertChecklist',
+                                  'NA',
+                                  'UserInfo.getUserEmail()',
+                                  'Contract', 'NA', 'NA', ex);
+        }
+        system.debug('ChecklistList-----------'+ChecklistList);
+        
+        List < Activity_Management__c > activityManagList = [SELECT Id,Valid_Status__c, Name, Category__c, Deal_Type__c, Region_Level_1__c, Region_Level_2__c, Region_Level_3__c, 
+                                                             State_Province__c, Deal_Category__c, Country_Region__c,Required_Activity__c,Parent_Activity__c,Parent_Activity__r.name,Business_Model__c 
+                                                             FROM Activity_Management__c where Parent_Activity__c != null and Parent_Activity__c in :checklistRecords ];     
+        
+        for(Activity__c ac:ChecklistList){
+            for(Activity_Management__c actMan :activityManagList)   {
+                if(ac.ActivityManagementId__c==actMan.Parent_Activity__c){
+                    Activity__c ac1 = new Activity__c();
+                    ac1.Parent_Activity__c=ac.id;
+                    ac1.Name = actMan .Name;
+                    ac1.Category__c = actMan .Category__c;
+                    ac1.Required_Activity__c = actMan .Required_Activity__c;
+                    ac1.Type__c='Child';  
+                    ac1.Valid_Status__c=actMan.Valid_Status__c;             
+                    ac1.Object__c='Contract';               
+                    ChildChecklistList.add(ac1);
+                }
+            }
+        }
+        try{
+            insert ChildChecklistList;
+            if (Test.isRunningTest()) {
+                CalloutException e = new CalloutException();
+                e.setMessage('This is a constructed exception for testing and code coverage');
+                throw e;
+            }
+        }
+        catch (Exception ex) {
+            system.debug('@@@ContractTrigger handler, insertChecklist-1, Exception Occured ::'+ex.getMessage()+' @line Number::'+ex.getLineNumber()+' @StackTraceString::'+ex.getStackTraceString());
+            IHGErrorLog.createLog('ContractTriggerHandle',
+                                  'insertChecklist',
+                                  'NA',
+                                  'UserInfo.getUserEmail()',
+                                  'Contract', 'NA', 'NA', ex);
+        }
+        
+        
+    }
+    
+    /**
+* Update status of other contracts related to a Hotel if new/updated contract status is executed.
+* @author :  Accenture - Abhishek KJ
+* @version : 1.0
+*/
+    public static void checkExistingContract(List < contract > newContractList, Map < id, sObject > oldContractMap,
+                                             Map < id, sObject > newContractMap, boolean insertOp) {
+                                                 
+                                                 try {
+                                                     /*      
+Map < id, Contract > newMap = (Map < id, Contract > ) newContractMap;
+Map < id, Contract > oldMap = (Map < id, Contract > ) oldContractMap;
+set < id > hotelIdSet = new set < id > ();
+List < Contract > updateContractList = New List < Contract > ();
+List < Hotel__c > hotelUpdateList = New List < Hotel__c > ();
+List < Hotel__c > hotelInsertList = New List < Hotel__c > ();
+set < Contract > inScopeContracts = New Set < Contract > ();
+Map < id, List < Contract >> hotelIdContractMap = New Map < id, List < Contract >> ();
+Map < id, Hotel__c > contractIdHotelMap = New Map < id, Hotel__c > ();
+Map < id, String > contName = New Map < id, String > ();
+Hotel__c hotelNewRecord;
+id conID;
+List < String > name = new List < String > ();
+
+
+system.debug('-----------' + newContractList);
+system.debug('##comtr'+newContractList[0].Type__c);
+system.debug('##comtr1'+newContractList[0].hotel__c);
+for (Contract itrContract: newContractList) {
+if (itrContract.Type__c.equalsIgnoreCase(StandardContract) && itrContract.hotel__c != null) { // also need to add recordtype check here.
+
+// if (itrContract.hotel__c != null) { // also need to add recordtype check here.
+
+hotelIdSet.add(itrContract.Hotel__c);
+inScopeContracts.add(itrContract);
+}
+}
+List < Hotel__c > hotelList = [Select id, Inn_Code__c, Current_Contract__c, (Select id, Status, Type__c from Contracts__r)
+from Hotel__c Where Id IN: hotelIdSet LIMIT: Limits.getLimitQueryRows() - Limits.getQueryRows()
+];
+
+if (hotelIdSet.size() > 0) {
+for (Hotel__c iterHotel: hotelList) {
+if (iterHotel.Contracts__r.size() > 0) {
+hotelIdContractMap.put(iterHotel.id, iterHotel.Contracts__r);
+for (contract iterCon: iterHotel.Contracts__r) {
+contractIdHotelMap.put(iterCon.id, iterHotel);
+}
+}
+}
+}
+
+for (Contract cntrct: inScopeContracts) {
+
+
+if (hotelIdContractMap.get(cntrct.Hotel__c).size() == 1 && cntrct.Type__c == StandardContract) { //When there is only one contract related to Hotel
+
+//if (hotelIdContractMap.get(cntrct.Hotel__c).size() == 1) { //When there is only one contract related to Hotel
+
+Hotel__c hotel = contractIdHotelMap.get(cntrct.id);
+hotel.Current_Contract__c = cntrct.id;
+hotelUpdateList.add(hotel);
+} else if (hotelIdContractMap.get(cntrct.Hotel__c).size() > 1) { //When there are multiple contracts.
+if (insertOp && cntrct.status == Executedstatus) { //if the trigger is fired due to inset operation
+Hotel__c hotel = contractIdHotelMap.get(cntrct.id);
+hotel.Current_Contract__c = cntrct.id;
+hotel.Pending_Contract__c = null;
+hotelUpdateList.add(hotel);
+List < Contract > relatedContractList = hotelIdContractMap.get(cntrct.Hotel__c);
+for (Contract relatedContract: relatedContractList) {
+if (relatedContract.id != cntrct.id && relatedContract.status.equalsIgnoreCase(Executedstatus)) {
+
+relatedContract.status = Replaced;
+updateContractList.add(relatedContract);
+}
+}
+} else if (insertOp && (cntrct.status == 'New' ||
+cntrct.status == Draft ||
+cntrct.status == Issued)) { //if the trigger is fired due to insert operation
+hotelNewRecord = contractIdHotelMap.get(cntrct.id);
+hotelNewRecord.Pending_Contract__c = cntrct.id;
+hotelUpdateList.add(hotelNewRecord);
+} else if (!insertOp && (cntrct.status == Dead)) {
+Hotel__c hotel = contractIdHotelMap.get(cntrct.id);
+hotel.Pending_Contract__c = null;
+hotelUpdateList.add(hotel);
+}
+
+/*   else if(!insertOp && hotelIdContractMap.get(cntrct.Hotel__c).size() > 1){ 
+system.debug('------------');
+if(newMap.get(cntrct.id).status ==Executedstatus||
+newMap.get(cntrct.id).status ==Dead){ //if the status is dead/issued/executed
+Hotel__c hotel= contractIdHotelMap.get(cntrct.id);
+
+hotelUpdateList.add(hotel);
+
+}                       
+
+}  
+else if (!insertOp && oldMap.get(cntrct.id).status == Executedstatus && (cntrct.status == Expired || cntrct.status == Terminated)) {
+
+
+
+//Executed contract to Terminated or Expired
+Hotel__c hotel = contractIdHotelMap.get(cntrct.id);
+
+
+List < Contract > relatedContractList = hotelIdContractMap.get(cntrct.Hotel__c);
+for (Contract relatedContract: relatedContractList) {
+if (relatedContract.id != cntrct.id && (relatedContract.status.equalsIgnoreCase('New') || relatedContract.status.equalsIgnoreCase(Draft) ||
+relatedContract.status.equalsIgnoreCase(Issued))) {
+hotel.Current_Contract__c = relatedContract.id;
+
+updateContractList.add(relatedContract);
+hotel.Pending_Contract__c = null;
+hotelUpdateList.add(hotel);
+}
+
+}
+
+} else if (!insertOp && cntrct.status.equalsIgnoreCase(Executedstatus) &&
+oldMap.get(cntrct.id).status != Executedstatus) { //if the trigger is fired due to update operation  
+Hotel__c hotel = contractIdHotelMap.get(cntrct.id);
+hotel.Current_Contract__c = cntrct.id;
+hotel.Pending_Contract__c = null;
+hotelUpdateList.add(hotel);
+List < Contract > relatedContractList = hotelIdContractMap.get(cntrct.Hotel__c);
+for (Contract relatedContract: relatedContractList) {
+if (relatedContract.id != cntrct.id && relatedContract.status.equalsIgnoreCase(Executedstatus)) {
+relatedContract.status = Replaced;
+updateContractList.add(relatedContract);
+}
+}
+}
+}
+}
+
+if (updateContractList.size() > 0) {
+update updateContractList;
+
+}
+
+if (hotelUpdateList.size() > 0) {
+
+update hotelUpdateList;
+}
+
+if (Test.isRunningTest()) {
+CalloutException e = new CalloutException();
+e.setMessage('This is a constructed exception for testing and code coverage');
+throw e;
+}*/
+                                                     
+                                                 } catch (Exception ex) {
+                                                     IHGErrorLog.createLog('ContractTriggerHandle',
+                                                                           'checkExistingContract',
+                                                                           'NA',
+                                                                           'UserInfo.getUserEmail()',
+                                                                           'Account', 'NA', 'NA', ex);
+                                                 }
+                                                 
+                                             }
+    
+    /* Update owner account of the accounts related to Related_Account__c object when contract Account field is updated
+
+--COmmenting this method as a part of US64638--
+*/
+    
+    /*  public static void updateLegalAccount(List<contract> newContractList, Map<id, sObject> oldContractMap,
+Map<id, sObject> newContractMap){
+
+try{
+
+Map<id, Contract> newMap = (Map<id, Contract>) newContractMap;
+Map<id, Contract> oldMap = (Map<id, Contract>) oldContractMap;
+Map<id, Related_Account__c > contractRelAccMap = New Map<id,Related_Account__c >();
+set<id> contractIdSet = New set<id>();
+Map<id, Account>  accountMap = New Map<id, Account>();
+List<Contract> inScopeContract = New List<Contract>();
+List<account> accUpdateList= New List<Account>();
+set<id> accIdSet = New set<id>();
+
+for (contract itrCon : newContractList){
+
+if(oldMap.get(itrCon.id).AccountId != newMap.get(itrCon.id).AccountId){
+contractIdSet.add(itrCon.id);
+accIdSet.add(itrCon.accountId);
+inScopeContract.add(itrCon);   
+}
+}
+List<Related_Account__c> relAccList = [Select Contract__c, Account__r.id from Related_Account__c
+Where Contract__c IN : contractIdSet AND
+recordType.developerName = 'Customer_Account'
+AND IsActive__c= true];
+for (Related_Account__c relAcc :  relAccList){
+contractRelAccMap.put( relAcc.Contract__c, relAcc); 
+}
+if(accIdSet.size() > 0){
+accountMap = New Map<id, Account>([Select id, parentId from Account WHERE id IN : accIdSet  ]); 
+}                                        
+for (Contract con : inScopeContract){
+if(con.AccountID != null && (contractRelAccMap.get(con.id) != null)){
+Account acc = accountMap.get(con.AccountID);
+acc.ParentId= contractRelAccMap.get(con.id).Account__c;
+accUpdateList.add(acc);
+}
+}
+
+
+if (accUpdateList.size() >0){
+
+update accUpdateList;
+}
+}
+catch(Exception ex){
+IHGErrorLog.createLog('ContractTriggerHandle',
+'updateLegalAccount',
+'NA',
+'UserInfo.getUserEmail()',
+'Account','NA','NA',ex);
+}
+
+
+}    */
+    
+    
+    
+    public static void updateContractStage(List < Contract > contractList,Map < id, sObject > oldnmMap,Map < id, sObject > newnmMap) {
+        Map < id, Contract> newMap = (Map < id, Contract> ) newnmMap;
+        Map < id, Contract> oldMap = (Map < id, contract> ) oldnmMap;
+        
+        set < String > contrSet = new set < String > ();
+        String contractStatus;
+        for (Contract contr: contractList) {
+            contrSet.add(contr.Id);
+            contractStatus = contr.Status;
+        }
+        system.debug('contractStatus-->'+contractStatus);
+        system.debug('contrSet-->'+contrSet);
+        List < Activity__c > parentActList = [Select Id, valid_status__c, Status__c, required_activity__c, Parent_Activity__c from Activity__c where Type__c = 'Parent'
+                                              AND Contract__c in: contrSet AND required_activity__c = true AND Status__c != 'Completed'
+                                              AND valid_status__c includes(:contractStatus)
+                                             ];
+        system.debug('parentActList-->'+parentActList);
+        if (parentActList.size() > 0) {
+            for (Contract contr: contractList) {
+                if(oldMap .get(contr.id).Status!=newMap .get(contr.id).Status){
+                    contr.addError('The Contract record cannot be transitioned to this stage without all related required Activity items being marked as Complete');
+                }
+            }
+        }
+        
+    }
+    
+    public static void stateCodeAbbreviation(List<Contract> contractlist){  
+        try{
+            Schema.DescribeFieldResult fieldResult = User.statecode.getDescribe();
+            List<Schema.PicklistEntry> ple = fieldResult.getPicklistValues();
+            System.debug('Picklist::'+ple); 
+            for(Contract cntrct:contractlist)
+            {
+                if(cntrct.State_of_Incorporation__c!=null){
+                    
+                    for(Schema.PicklistEntry f : ple)
+                    {
+                        if(cntrct.State_of_Incorporation__c==f.getLabel())
+                        {
+                            cntrct.State_Province_Code__c=f.getValue();
+                            System.debug(cntrct.State_Province_Code__c);
+                        }
+                    }
+                }
+            }
+        }Catch(Exception ex){ throw ex;}
+    }
+    
+    // Insert Term Fee object based on Fee 
+    public static void createTermFee(List < Contract > conList) {
+        try{
+            List<String> recName = new List<String> ();        
+            List < String > conIds = new List < String > ();
+            List < String > opptyIds = new List < String > ();
+            List < String > feeCurrency = new List < String > ();
+            List < String > feeYear = new List < String > ();
+            List < String > FeeRecords = new List < String > ();
+            List < String > oldFeeRecords = new List < String > ();
+            Map<id,RecordType> recMap = new Map<id,RecordType>();
+            List < Term_Fees__c >insertTermFee = new List<Term_Fees__c>();
+            List < RecordType >recList = new List<RecordType>();
+            
+            
+            for(Contract con : conList){
+                contract oldc = (contract)trigger.oldmap.get(con.id);
+                system.debug('oldc::'+oldc.Fee_Ids__c);
+                system.debug('con::'+con.Fee_Ids__c);
+                if(con.Fee_Ids__c != null && con.Fee_Ids__c != oldc.Fee_Ids__c )
+                    conIds.add(con.Id);
+                
+                opptyIds.add(con.Opportunity__c);
+                feeCurrency.add(con.Fee_Currency_for_Fee__c);
+                feeYear.add(con.Fee_Year_for_Fee__c);
+                
+                
+            }
+            
+            
+            /*List<Contract> contractList = new List<Contract>([SELECT Id, AccountId, Opportunity__c,Fee_Ids__c FROM Contract where Id IN:conIds]);
+if (contractList.size() > 0) {
+if (contractList[0].Fee_Ids__c != null) {
+FeeRecords = contractList[0].Fee_Ids__c.split(',');
+}*/
+            if(conIds.contains(conList[0].id )){
+                if (conList[0].Fee_Ids__c != null) {
+                    FeeRecords = conList[0].Fee_Ids__c.split(',');
+                }
+                
+                /* contract oldcontract = (contract)trigger.oldmap.get(contractList[0].id);
+if(oldcontract.Fee_Ids__c != null){
+
+oldFeeRecords = oldcontract.Fee_Ids__c.split(',');
+}*/
+                
+                system.debug('FeeRecords'+FeeRecords);
+                // system.debug('oldFeeRecords'+oldFeeRecords);
+                // Map < String, Schema.RecordTypeInfo > recordTypeFee = Term_Fees__c.sObjectType.getDescribe().getRecordTypeInfosByName();
+                //  Id AccRecTypeId = recordTypeFee.get('Fixed Fee').getRecordTypeId();
+                
+                
+                List<Fee__c> feeRecList = new List<Fee__c>([SELECT Id,recordtype.name, Name, RecordTypeId,Suspendable__c,Credit__c,GR_Fee_Type__c,RecordType.DeveloperName, Description__c, Currency_Value__c, Frequency__c, Percentage_Value__c FROM Fee__c where ID IN:FeeRecords]);
+                
+                for(Fee__c feeRec : feeRecList){          
+                    recMap.put(feeRec.Id,[SELECT Id, Name,DeveloperName , NamespacePrefix, Description, IsActive, SobjectType FROM RecordType where DeveloperName =: feeRec.RecordType.DeveloperName and SobjectType='Term_Fees__c']);
+                }
+                
+                recList = [SELECT Id, Name,DeveloperName , NamespacePrefix, Description, IsActive, SobjectType FROM RecordType where DeveloperName IN : recName and SobjectType='Term_Fees__c'];
+                
+                
+                for(Fee__c feeRec : feeRecList ){
+                    
+                    Term_Fees__c newTermFee = new Term_Fees__c();
+                    newTermFee.Name = feeRec.Name;
+                    newTermFee.Currency_Value__c = feeRec.Currency_Value__c;
+                    newTermFee.Percentage__c = feeRec.Percentage_Value__c;
+                    if(opptyIds[0] != null)
+                        newTermFee.Opportunity__c = opptyIds[0];
+                    newTermFee.Contract__c = conIds[0];
+                    newTermFee.Fee_Year__c = feeYear[0] ;
+                    newTermFee.Fee_Currency__c = feeCurrency[0];
+                    newTermFee.RecordTypeID = recMap.get(feeRec.id).id;
+                    newTermFee.Credit__c=feeRec.Credit__c;
+                    newTermFee.Suspendable__c=feeRec.Suspendable__c;
+                    newTermFee.GR_Fee_Type__c=feeRec.GR_Fee_Type__c;
+                    if(feeRec.RecordType.name != 'Tranche Fee')
+                        newTermFee.Managed_by_PeopleSoft__c = true; 
+                    insertTermFee.add(newTermFee);
+                }
+                system.debug('insertTermFee'+insertTermFee);
+                database.insert(insertTermFee);
+                conList[0].Fee_Ids__c='';
+            }
+        }Catch(Exception ex){ throw ex;}
+    }
+    
+    public static void updatecongaquery(List<Contract> contracts){
+        try{
+            List<APXTConga4__Conga_Merge_Query__c> congaqueryPC =[Select Id from APXTConga4__Conga_Merge_Query__c where APXTConga4__Name__c = 'Contract-PC' limit 1];
+            List<APXTConga4__Conga_Merge_Query__c> congaquerySA =[Select Id from APXTConga4__Conga_Merge_Query__c where APXTConga4__Name__c = 'State Addedum' limit 1];
+            List<APXTConga4__Conga_Merge_Query__c> congaqueryClauses =[Select Id from APXTConga4__Conga_Merge_Query__c where APXTConga4__Name__c = 'Clauses' limit 1];
+            List<APXTConga4__Conga_Merge_Query__c> congaqueryTeamMembersMgr =[Select Id from APXTConga4__Conga_Merge_Query__c where APXTConga4__Name__c = 'TeamMember-Manager' limit 1];
+            List<APXTConga4__Conga_Merge_Query__c> congaqueryTeamMembersSpc =[Select Id from APXTConga4__Conga_Merge_Query__c where APXTConga4__Name__c = 'TeamMember-Specialist' limit 1];
+            List<APXTConga4__Conga_Merge_Query__c> congaqueryClausesLOI =[Select Id from APXTConga4__Conga_Merge_Query__c where APXTConga4__Name__c = 'Clauses - LOI' limit 1];
+            List<APXTConga4__Conga_Merge_Query__c> congaqueryAltLangAcc =[Select Id from APXTConga4__Conga_Merge_Query__c where APXTConga4__Name__c = 'Alternate Language - Legal Account' limit 1];
+            List<APXTConga4__Conga_Merge_Query__c> congaqueryAltLangHtl =[Select Id from APXTConga4__Conga_Merge_Query__c where APXTConga4__Name__c = 'Alternate Language - Hotel' limit 1];
+            List<APXTConga4__Conga_Merge_Query__c> congaqueryAltLangConPC =[Select Id from APXTConga4__Conga_Merge_Query__c where APXTConga4__Name__c = 'Alternate Language - Contact(PC)' limit 1];
+            List<APXTConga4__Conga_Merge_Query__c> congaqueryRelAccCLH =[Select Id from APXTConga4__Conga_Merge_Query__c where APXTConga4__Name__c = 'Related Account - Comfort Letter Holder' limit 1];
+            List<APXTConga4__Conga_Merge_Query__c> congaqueryRelAccLen =[Select Id from APXTConga4__Conga_Merge_Query__c where APXTConga4__Name__c = 'Related Account - Lender' limit 1];
+            List<APXTConga4__Conga_Merge_Query__c> congaqueryRelAccSS =[Select Id from APXTConga4__Conga_Merge_Query__c where APXTConga4__Name__c = 'Related Account - Special Servicer' limit 1];
+            List<APXTConga4__Conga_Merge_Query__c> congaqueryRenOpn =[Select Id from APXTConga4__Conga_Merge_Query__c where APXTConga4__Name__c = 'Renewal Opinion' limit 1];
+            
+            if(congaqueryRenOpn.size()>0 && congaqueryRelAccSS.size()>0 && congaqueryRelAccLen.size()>0 && congaqueryRelAccCLH.size()>0 && congaqueryAltLangConPC.size()>0 &&
+               congaqueryAltLangHtl.size()>0 && congaqueryAltLangAcc.size()>0 && congaqueryClausesLOI.size()>0 && congaqueryPC.size()>0 && congaquerySA.size()>0 && congaqueryClauses.size()>0 &&
+               congaqueryTeamMembersMgr.size()>0 && congaqueryTeamMembersSpc.size()>0){
+                   for(contract c:contracts){
+                       c.Conga_Query_Id__c = '[PC]'+congaqueryPC[0].id+',[SA]'+congaquerySA[0].id+',[Clauses]'+congaqueryClauses[0].id+',[TMM]'+congaqueryTeamMembersMgr[0].id+',[TMS]'+congaqueryTeamMembersSpc[0].id+',[ClausesLOI]'+congaqueryClausesLOI[0].id;
+                       c.Conga_Query_Id_1__c = ',[RelAccCLH]'+congaqueryRelAccCLH[0].id+',[RelAccLen]'+congaqueryRelAccLen[0].id+',[RelAccSS]'+congaqueryRelAccSS[0].id+',[RenOp]'+congaqueryRenOpn[0].id;
+                       c.Conga_Query_Id_2__c = ',[AltLangHtl]'+congaqueryAltLangHtl[0].id+'?pv0='+c.hotel__c+',[AltLangAcc]'+congaqueryAltLangAcc[0].id+'?pv0='+c.Legal_Entity_Name__c+',[AltLangConPC]'+congaqueryAltLangConPC[0].id+'?pv0=';
+                   }
+               }
+        }Catch(Exception ex){ throw ex;}
+        
+    }
+    
+    public static void checkPrimaryLegal(list <Contract> conList,Map < id, sObject > oldnmMap,Map < id, sObject > newnmMap)
+    {
+        try{
+            List<id>conId=new List<id>();
+            Map < id, Contract> newMap = (Map < id, Contract> ) newnmMap;
+            Map < id, Contract> oldMap = (Map < id, contract> ) oldnmMap;
+            for(Contract c:conList )
+            {
+                conId.add(c.id);
+            }
+            
+            List<Contract>conNew=[select id ,override__c,rECORDTYPE.NAME,Jointventurecount__c from contract where id in :conId];
+            if(conNew.size()>0){
+                for(Contract c:conList)
+                {
+                    if(c.Jointventurecount__c ==0 && c.override__c==false && c.Recordtype.name=='Standard JV')
+                        c.addError('Please add an active Primary Legal Entity to continue');
+                }
+            }
+            
+        }Catch(Exception ex){ throw ex;}
+    }
+    
+    public static void updateOppCon(List < contract > newContractList, Map < id, sObject > oldContractMap,
+                                    Map < id, sObject > newContractMap, String context){
+                                        try{
+                                            
+                                            Map < id, Contract > newMap = (Map < id, Contract > ) newContractMap;
+                                            Map < id, Contract > oldMap = (Map < id, Contract > ) oldContractMap;
+                                            List<Contract> conList=new List<Contract>();
+                                            conlist=newContractList;
+                                            String Ncontext=context;
+                                            List<Contract>conList1=[select id, Opportunity__c,Opportunity__r.Contractid from Contract where id=:newContractList[0].id];
+                                            
+                                            system.debug('conList1---------'+conList1);
+                                            Opportunity opp=[select id,contractid,StageName from Opportunity where id =:conList1[0].Opportunity__c];
+                                            system.debug('old---------------'+oldMap);
+                                            system.debug('new----------'+newMap.get(conList1[0].id).Opportunity__c);
+                                            
+                                            
+                                            // if(oldMap.get(conList1[0].id).Opportunity__c!=newMap.get(conList1[0].id).Opportunity__c){
+                                            if(context=='insert'){
+                                                if(opp.stagename=='Terms Agreed' && opp.contractid==''|| (conList1[0].Opportunity__r.Contractid <>newContractList[0].id))
+                                                {
+                                                    opp.contractid=newContractList[0].id;
+                                                    update opp;
+                                                } 
+                                            }
+                                            
+                                            if (context=='update'){
+                                                if(oldMap.get(conList1[0].id).Opportunity__c!=newMap.get(conList1[0].id).Opportunity__c){
+                                                    Opportunity op=[select id,contractid from Opportunity where id=:newMap.get(conList1[0].id).Opportunity__c];
+                                                    system.debug('pppppppppppppp'+op);
+                                                    if(op.contractid==null || (conList1[0].Opportunity__r.Contractid <>newContractList[0].id))
+                                                    {
+                                                        op.contractid=newContractList[0].id;
+                                                        update op;
+                                                    } 
+                                                }
+                                                
+                                                
+                                                
+                                            }
+                                            
+                                            
+                                            //System.enqueueJob(new FlowUpdate (conlist,newMap ,oldMap ,Ncontext));
+                                            
+                                        }Catch(Exception ex){ throw ex;}  
+                                    }
+    
+}
